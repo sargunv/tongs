@@ -434,6 +434,9 @@ and new line numbers, so every adapter can lower it:
 - **Inbox and Feed** are the top-level destinations, with an account and
   instance switcher.
 - **Thread (issue or PR conversation).**
+  - One scroll, not tabs: a summary card (for PRs: changes and viewed progress,
+    checks, reviews), the primary action, the description, then the timeline.
+    The owner leans this way but isn't sure, so revisit it once it's in use.
   - Timeline items include typed events.
   - Reactions, labels, and assignees.
   - Sub-issues and dependencies where the capability allows.

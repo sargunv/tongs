@@ -3,6 +3,8 @@ plugins { alias(libs.plugins.kotlin.multiplatform) }
 kotlin {
   jvmToolchain(25)
   jvm()
+
+  sourceSets { commonMain.dependencies { api(libs.kotlinx.coroutines.core) } }
 }
 
 /** Builds the Rust JNI library that `NativeEngine` loads. */

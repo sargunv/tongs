@@ -241,24 +241,21 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeFetch_abortResponse<'
     session(handle).session.fail(id as u64);
 }
 
-/// Fetches the blobs of `review`'s files `first..=last` before any others.
+/// Fetches the blobs of the files at `paths` (newline-separated) first.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeFetch_prioritize<'local>(
-    _env: EnvUnowned<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
-    review_handle: jlong,
-    first: jint,
-    last: jint,
+    paths: JString<'local>,
 ) {
-    let files = &review(review_handle).files;
-    let (first, last) = (first.max(0) as usize, (last.max(-1) + 1) as usize);
-    let paths = files[first.min(files.len())..last.min(files.len())]
-        .iter()
-        .filter(|f| !f.loaded)
-        .map(|f| f.path.clone())
-        .collect();
-    session(handle).session.prioritize(paths);
+    env.with_env(|env| -> Result<(), Error> {
+        let paths = paths.try_to_string(env)?;
+        let paths = paths.lines().map(str::to_owned).collect();
+        session(handle).session.prioritize(paths);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 /// Returns a review handle if anything changed since the last snapshot, or 0.
@@ -278,6 +275,23 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeFetch_isDone<'local>(
     handle: jlong,
 ) -> jboolean {
     session(handle).session.is_done()
+}
+
+/// Whether `ancestor` is reachable from `descendant` in the store.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeFetch_isAncestor<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    ancestor: JString<'local>,
+    descendant: JString<'local>,
+) -> jboolean {
+    env.with_env(|env| -> Result<jboolean, Error> {
+        let ancestor = oid(&ancestor.try_to_string(env)?)?;
+        let descendant = oid(&descendant.try_to_string(env)?)?;
+        Ok(session(handle).session.is_ancestor(&ancestor, &descendant))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 /// Requests sent, objects received, and pack bytes, space-separated.

@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,7 +52,10 @@ import kotlin.time.TimeSource
  * The vertical offset is a `Double`: at 20px per row, a 700k-row review is 14M px tall, past where
  * `Float` can still address single pixels.
  */
-class CodeViewState(val rows: ReviewRows) {
+class CodeViewState(rows: ReviewRows) {
+  var rows by mutableStateOf(rows)
+    private set
+
   var offsetY by mutableDoubleStateOf(0.0)
     private set
 
@@ -60,7 +64,9 @@ class CodeViewState(val rows: ReviewRows) {
 
   internal var lineHeight by mutableFloatStateOf(1f)
   internal var viewportHeight by mutableIntStateOf(0)
-  internal val window = RowWindow(rows)
+  internal var window by mutableStateOf(RowWindow(rows))
+    private set
+
   val stats = FrameStats()
 
   val maxOffsetY: Double
@@ -82,6 +88,46 @@ class CodeViewState(val rows: ReviewRows) {
 
   internal fun scrollXBy(delta: Float, maxWidth: Float) {
     offsetX = (offsetX + delta).coerceIn(0f, maxWidth)
+  }
+
+  /**
+   * Swaps in a newer snapshot of the same review and returns the old one. The top row stays put:
+   * same file, same row within it. A loaded file's rows never change, so that's the same line; a
+   * placeholder row maps to the start of the file's diff. At the very top, the view stays at the
+   * top, so files that sort earlier come into view as they're found.
+   */
+  fun swapRows(newRows: ReviewRows): ReviewRows {
+    val old = rows
+    val first = firstVisibleRow
+    val withinRow = offsetY - first * lineHeight.toDouble()
+    var target = first
+    val anchor = if (offsetY > 0.0) old.rows(first, 1).firstOrNull() else null
+    if (anchor != null) {
+      val file = newRows.fileIndex(old.filePath(anchor.file))
+      if (file >= 0) {
+        val start = newRows.fileFirstRow(file)
+        val end =
+          if (file + 1 < newRows.fileCount) newRows.fileFirstRow(file + 1) else newRows.rowCount
+        target = (start + first - old.fileFirstRow(anchor.file)).coerceAtMost(end - 1)
+      }
+    }
+    rows = newRows
+    window = RowWindow(newRows)
+    offsetY =
+      if (anchor == null) 0.0
+      else (target * lineHeight.toDouble() + withinRow).coerceIn(0.0, maxOffsetY)
+    return old
+  }
+
+  /** The files on screen and in the next [ahead] screens, for fetching their content first. */
+  fun visibleFiles(ahead: Int = 2): IntRange {
+    if (rows.rowCount == 0) return IntRange.EMPTY
+    val perScreen = ceil(viewportHeight / lineHeight).toInt() + 1
+    val last = (firstVisibleRow + perScreen * (ahead + 1)).coerceAtMost(rows.rowCount - 1)
+    val first = firstVisibleRow.coerceAtMost(last)
+    val firstFile = rows.rows(first, 1).firstOrNull()?.file ?: return IntRange.EMPTY
+    val lastFile = rows.rows(last, 1).firstOrNull()?.file ?: return IntRange.EMPTY
+    return firstFile..lastFile
   }
 
   /** Jumps to the next (or previous) file's header. */

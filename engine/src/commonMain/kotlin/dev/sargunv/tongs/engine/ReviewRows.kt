@@ -29,6 +29,9 @@ interface ReviewRows {
 
   fun fileFirstRow(file: Int): Int
 
+  /** The index of the file at [path], or -1. Files are sorted by path. */
+  fun fileIndex(path: String): Int
+
   /** Rows `first until first + count`, clamped to the review. */
   fun rows(first: Int, count: Int): List<Row>
 }

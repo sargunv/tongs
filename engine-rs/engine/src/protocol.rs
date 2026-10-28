@@ -31,8 +31,8 @@ impl Filter {
 pub struct FetchRequest {
     pub wants: Vec<ObjectId>,
     pub filter: Option<Filter>,
-    /// Shallow depth for commit wants. Without it, wanting a commit with any
-    /// filter but `tree:0` walks its whole history.
+    /// Shallow depth for commit wants. Without it, wanting a commit sends its
+    /// whole history, whatever the filter: 1.1M objects for nixpkgs.
     pub deepen: Option<u32>,
 }
 

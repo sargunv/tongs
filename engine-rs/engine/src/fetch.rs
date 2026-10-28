@@ -98,6 +98,7 @@ struct ReviewLoad {
     /// Pending files by the missing blobs they wait on.
     waiting: HashMap<ObjectId, Vec<String>>,
     requested_blobs: HashSet<ObjectId>,
+    bulk_batches: u32,
     /// Paths the viewer shows; their blobs are fetched first.
     visible: Vec<String>,
     /// Whether anything changed since the last snapshot.
@@ -158,6 +159,7 @@ impl FetchSession {
             files: BTreeMap::new(),
             waiting: HashMap::new(),
             requested_blobs: HashSet::new(),
+            bulk_batches: 0,
             visible: Vec::new(),
             dirty: false,
         });
@@ -184,7 +186,7 @@ impl FetchSession {
                 } else {
                     Filter::TreeZero
                 }),
-                deepen: whole.then_some(1),
+                deepen: Some(1),
             };
             let label = format!(
                 "commits ×{}{}",
@@ -250,9 +252,10 @@ impl FetchSession {
             .count();
         let batch = self.options.blob_batch.max(1);
         let mut wants = Vec::new();
-        let mut take = |slot: &FileSlot, wants: &mut Vec<ObjectId>| {
+        let requested = &mut review.requested_blobs;
+        let mut take = |slot: &FileSlot, wants: &mut Vec<ObjectId>, batch: usize| {
             for id in &slot.missing {
-                if wants.len() < batch && review.requested_blobs.insert(*id) {
+                if wants.len() < batch && requested.insert(*id) {
                     wants.push(*id);
                 }
             }
@@ -260,7 +263,7 @@ impl FetchSession {
         if blob_requests <= self.options.max_blob_requests {
             for path in &review.visible {
                 if let Some(slot) = review.files.get(path) {
-                    take(slot, &mut wants);
+                    take(slot, &mut wants, batch);
                 }
             }
             if !wants.is_empty() {
@@ -271,13 +274,16 @@ impl FetchSession {
         if blob_requests >= self.options.max_blob_requests {
             return None;
         }
+        // Start small, so the first files' diffs don't wait on a big batch.
+        let batch = batch.min(32 << review.bulk_batches.min(8));
         for slot in review.files.values() {
             if wants.len() >= batch {
                 break;
             }
-            take(slot, &mut wants);
+            take(slot, &mut wants, batch);
         }
         (!wants.is_empty()).then(|| {
+            review.bulk_batches += 1;
             let label = format!("blobs ×{}", wants.len());
             (wants, label)
         })
@@ -413,6 +419,25 @@ impl FetchSession {
         })
     }
 
+    /// Whether `ancestor` is reachable from `descendant` through commits
+    /// already in the store. If so, it's their merge base, and a PR whose
+    /// base is an ancestor of its head needn't wait for the forge to say so.
+    /// `false` may just mean the history isn't fetched.
+    pub fn is_ancestor(&self, ancestor: &ObjectId, descendant: &ObjectId) -> bool {
+        let mut seen = HashSet::new();
+        let mut queue = vec![*descendant];
+        while let Some(commit) = queue.pop() {
+            if commit == *ancestor {
+                return true;
+            }
+            if seen.len() > 10_000 || !seen.insert(commit) || !self.store.contains(&commit) {
+                continue;
+            }
+            queue.extend(self.store.commit_parents(&commit).unwrap_or_default());
+        }
+        false
+    }
+
     pub fn in_flight(&self) -> usize {
         self.in_flight.len()
     }
@@ -475,11 +500,16 @@ impl ResponseSink {
         // A few chunks of slack; a full pipe blocks the caller's IO thread.
         let (tx, rx) = sync_channel(16);
         let thread = std::thread::spawn(move || {
-            store.ingest(PackStream::new(ChannelReader {
+            let mut stream = PackStream::new(ChannelReader {
                 rx,
                 chunk: Vec::new(),
                 pos: 0,
-            }))
+            });
+            let outcome = store.ingest(&mut stream)?;
+            // The indexer stops at the pack's checksum; read on to the closing
+            // flush-pkt so the caller can write the whole body.
+            io::copy(&mut stream, &mut io::sink())?;
+            Ok(outcome)
         });
         Self {
             tx: Some(tx),
@@ -712,6 +742,8 @@ mod tests {
         session
             .complete(request.id, &sink.finish().unwrap())
             .unwrap();
+        assert!(session.is_ancestor(&old, &new));
+        assert!(!session.is_ancestor(&new, &old));
         let headers = session.snapshot().unwrap();
         assert_eq!(headers.files.len(), 4);
         assert!(headers.files.iter().all(|f| !f.loaded));

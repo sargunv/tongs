@@ -4,15 +4,22 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /** A [ReviewRows] backed by the native engine. */
-class Review private constructor(private var handle: Long) : ReviewRows, AutoCloseable {
+class Review internal constructor(internal var handle: Long) : ReviewSnapshot {
   override val rowCount: Int = NativeEngine.rowCount(handle)
   override val fileCount: Int = NativeEngine.fileCount(handle)
 
-  private val buffer = ByteBuffer.allocateDirect(1 shl 20).order(ByteOrder.LITTLE_ENDIAN)
+  // Lazy: a fetch makes many snapshots, and the UI only ever reads rows from some of them.
+  private val buffer by lazy {
+    ByteBuffer.allocateDirect(1 shl 20).order(ByteOrder.LITTLE_ENDIAN)
+  }
 
   override fun filePath(file: Int): String = NativeEngine.filePath(handle, file)
 
   override fun fileFirstRow(file: Int): Int = NativeEngine.fileFirstRow(handle, file)
+
+  override fun fileIndex(path: String): Int = NativeFetch.fileIndex(handle, path)
+
+  override fun fileLoaded(file: Int): Boolean = NativeFetch.fileLoaded(handle, file)
 
   override fun rows(first: Int, count: Int): List<Row> {
     val out = ArrayList<Row>(count)

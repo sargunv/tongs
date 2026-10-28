@@ -58,7 +58,7 @@ Research basis, as of 2026-10-28:
 │ file diff: histogram + intra-line refinement (imara-diff)            │
 │ classification: gitattributes, linguist, generated heuristics,       │
 │                 CODEOWNERS                                           │
-│ highlighting: tree-house + Helix queries, static grammars            │
+│ highlighting: tree-house + Helix queries, grammars bundled per OS    │
 │ row model: per-file row counts, prefix sums, text slabs, token runs  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -190,6 +190,12 @@ The same engine serves PR review, commit view, compare, and the file browser.
      seconds stay plain. Generated files aren't skipped: the file tree collapses
      them, so they're never requested unless someone opens them, and then
      they're worth coloring.
+   - Desktop links the grammars in. Android bundles each as its own shared
+     library, compressed, inside `libtongs_jni`, because Android stores native
+     libraries uncompressed and the grammars are 30 MB. The first file that
+     needs a grammar extracts it to the app's cache and loads it, on the
+     highlighting thread, so that file stays plain until it lands, like any
+     other pending highlight.
 7. **Row model.**
    - Per file, the engine keeps row counts and prefix sums covering headers,
      hunk separators, context, add/delete pairs, collapsed regions, and
@@ -864,6 +870,143 @@ from other work):
   Warm passes are the same within noise. The review opens in 77 ms, and the JVM
   heap stays at 6 MiB.
 
+### 2026-10-28: grammar size on Android
+
+Statically linked grammars made the release APK 67 MiB with both ABIs, and a
+per-ABI install about 34 MB, because Android stores native libraries
+uncompressed. Tongs ships on Google Play and F-Droid, so the fix had to work for
+both. Android now bundles each grammar compressed inside `libtongs_jni` and
+extracts it the first time a file needs it. Desktop still links them in.
+
+**How it works.**
+
+- `tongs-grammars` (`engine-rs/grammars`) finds the grammar crates that
+  `tongs-highlight` depends on with `cargo metadata`. It compiles each grammar's
+  `parser.c` and scanner with the NDK's clang into its own stripped shared
+  library (`-O2`, section GC, 16 KB pages) and compresses it with LZMA.
+  `:engine:buildGrammars` runs it before `cargoNdkBuild`. It takes 7 s for 21
+  grammars × 2 ABIs, and the output is byte-for-byte reproducible.
+- On Android, `tongs-highlight` doesn't depend on the grammar crates. It
+  `include_bytes!`s the compressed libraries for its target instead, so they're
+  ABI-split like any native code. Play can't split assets by ABI.
+- The first `get_config` for a language extracts its library to
+  `<cache>/tongs-grammars/<name>-<hash>.so`, read-only, then renames it into
+  place, and loads it with `dlopen`. `Highlighter` passes that directory by
+  default, from `java.io.tmpdir`, which Android sets to the app's cache dir, so
+  callers need no `Context`. Files from other builds are deleted. If Android
+  clears the cache, the grammars are extracted again.
+- **While a grammar loads,** the extraction runs on the highlighting thread that
+  wanted it. Its file is `Pending` and drawn plain. When the highlights land,
+  the epoch bumps and the rows repaint, as with any other pending highlight.
+  Other languages keep highlighting on other threads.
+- A host test checks that each language's symbol names the same grammar as its
+  crate, since Android loads grammars by symbol.
+
+**Options measured.** Sizes are for arm64-v8a, stripped, unless noted:
+
+| Option                                         | `libtongs_jni`  | APK, one ABI | APK, both ABIs |
+| ---------------------------------------------- | --------------- | ------------ | -------------- |
+| Linked, as before                              | 34.8 MB         | 35.6 MB      | 70.6 MB        |
+| `-Os` or `-Oz` for grammar C code              | −0.15 MB (0.5%) |              |                |
+| Fat LTO                                        | 34.1 MB         |              |                |
+| Fat LTO, `opt-level = "s"`, C `-Os`            | 33.4 MB         |              |                |
+| Compressed in the APK (`useLegacyPackaging`)   | 34.8 MB         | about 5 MB   | about 10 MB    |
+| **Bundled compressed, extracted on first use** | **5.9 MB**      | **6.7 MB**   | **13.1 MB**    |
+
+- **Compiler and linker settings barely help.** Parse tables are `.rodata`:
+  Kotlin's library is 5.6 MB of data and 0.14 MB of code. The LTO savings come
+  from the engine's Rust code, not the grammars.
+- **Compressed native libraries** shrink the APK, but the installer extracts
+  them, so a device keeps both the APK and 35 MB of libraries. Google also
+  recommends against it for download size.
+- **Play Feature Delivery** works only on Play. Its library is proprietary, and
+  F-Droid flags it as NonFreeDep, so F-Droid would need another approach anyway.
+  On-demand modules also need the network the first time a language appears. I
+  didn't build it.
+- **Trimming** isn't needed. Bundled, C# and Swift together cost 0.35 MB.
+- **Loading from a `memfd`** with `android_dlopen_ext` would need no disk. The
+  linker allows it for apps, but each launch would decompress every grammar in
+  use into unswappable memory, 5.8 MB for Kotlin alone. File-backed pages can be
+  dropped under memory pressure. I didn't build it.
+
+**Compression,** summed over all 21 grammars for arm64 (30.6 MB uncompressed):
+
+| deflate -9 | brotli -11 | zstd -19 | xz -9e  | LZMA preset 9 (used) |
+| ---------- | ---------- | -------- | ------- | -------------------- |
+| 2.67 MB    | 1.72 MB    | 1.84 MB  | 1.56 MB | 1.58 MB              |
+
+x86_64 is 1.60 MB. Tuning `lc`, `lp`, and `pb` saved another 1.4%, which wasn't
+worth it. The decoder is pure Rust (`lzma-rust2`, Apache-2.0). With it and the
+grammars, `libtongs_jni` is 5.9 MB on arm64 and 6.3 MB on x86_64, against about
+4.3 MB for the engine alone. The engine is now most of the APK: fat LTO with
+`opt-level = "s"` would take the library to 4.5 MB, but that's a speed tradeoff
+for later.
+
+**On the x86_64 API 36 emulator,** with the universal APK:
+
+- The installed APK is 13.1 MB, and `/data/app` holds 14.1 MB with its compiled
+  code. A Play install gets one ABI, about 6.7 MB. Gzip puts the download at
+  about 4.0 MB, against 5.1 MB before; Play already compressed the uncompressed
+  libraries for transfer, so most of the gain is on the device. F-Droid serves
+  the APK as is: 13.1 MB universal, against 70.6 MB.
+- **The grammar cache grows with use.** After scrolling #760's Markdown, YAML,
+  C, C++, Go, Kotlin, Python, and Rust, it held 9 grammars in 14.5 MB. All 21
+  take 30.4 MB on x86_64 and 30.6 MB on arm64. Settings counts it as cache.
+- **First-use latency,** from the `prepare_languages` example, three runs each.
+  "Warm" means the grammar is already extracted, so the difference is
+  extraction:
+
+  | Language | First use  | Already extracted | Extraction |
+  | -------- | ---------- | ----------------- | ---------- |
+  | Kotlin   | 58–70 ms   | 44 ms             | 14–26 ms   |
+  | C++      | 94–110 ms  | 78–80 ms          | 13–32 ms   |
+  | C#       | 49–64 ms   | 34–35 ms          | 15–29 ms   |
+  | Swift    | 124–130 ms | 111–114 ms        | 12–18 ms   |
+  | Rust     | 47–48 ms   | 41 ms             | 6–7 ms     |
+  | C        | 10–11 ms   | 6 ms              | 3–5 ms     |
+  | All 22   | 721–797 ms | 607–614 ms        | 108–183 ms |
+
+  The rest is mostly compiling Helix's queries, which desktop pays too. These
+  are emulator numbers on a fast desktop; a phone core is slower.
+
+- Highlighted rows appear for Kotlin, C, Rust, C++, Go, and Markdown in #760.
+  SELinux logs each load as `granted { execute }` on `app_data_file`.
+
+**Policy.**
+
+- **Google Play** forbids apps that "download executable code (such as dex, JAR,
+  .so files) from a source other than Google Play"
+  ([Device and Network Abuse](https://support.google.com/googleplay/android-developer/answer/16559646)).
+  These grammars ship inside the APK that Play delivers, and nothing is
+  downloaded. Meta's apps do the same with compressed native code
+  ([Superpack](https://engineering.fb.com/2021/09/13/android/superpack/)).
+- **F-Droid** forbids downloading "additional executable binary files" without
+  consent, and requires binaries to come from source
+  ([Inclusion Policy](https://f-droid.org/en/docs/Inclusion_Policy/)). Every
+  grammar is built from crate sources during the Gradle build, and nothing
+  prebuilt is committed. No anti-feature applies. Play Feature Delivery would be
+  flagged NonFreeDep by fdroidserver's scanner.
+- **Android 10's W^X change** blocks `execve` of files in the app's home
+  directory, not `dlopen`. `untrusted_app_all.te` keeps `execute` on
+  `app_data_file`, for apps that "ship with shared libraries… that they write
+  out to their sandbox directory"
+  ([behavior change](https://developer.android.com/about/versions/10/behavior-changes-10)).
+- **Android 14's safer dynamic code loading** requires dynamically loaded files
+  to be read-only
+  ([behavior change](https://developer.android.com/about/versions/14/behavior-changes-14#safer-dynamic-code-loading)).
+  ART enforces it only for dex, but the extracted grammars are made read-only
+  before they're written anyway.
+- **The linker namespace** permits all of `/data` for app class loaders
+  (`kAlwaysPermittedDirectories` in libnativeloader), so the cache dir is
+  loadable.
+
+Not covered yet:
+
+- A physical device, and API 31 (the emulator ran API 36)
+- A cap on the grammar cache; it only shrinks when Android clears it
+- Retrying a grammar that failed to extract, for example on a full disk. The
+  language stays plain until the app restarts.
+
 ## Plan
 
 0. **Spike the engine first. It's the main risk.**
@@ -899,15 +1042,15 @@ from other work):
   - GitHub's rate limits for git over HTTPS are undocumented.
   - Forgejo admins can disable partial clone. Fallback: Forgejo's batch blob
     API.
-- **Grammar size.** The 22 starter languages add 33 MB to `libtongs_jni`
-  uncompressed (4 MB gzipped), and Android stores native libraries uncompressed.
-  Kotlin, C++, C#, Swift, and TypeScript alone are 23 MB. Mitigations:
-  - Start with about 20 languages.
-  - Fall back to plain text for the rest.
-  - Consider a TextMate engine for the long tail (syntect is MIT).
-  - Consider Play Feature Delivery packs.
-
-  Downloading native code outside Play violates Play policy.
+- **Grammar size.** Solved for the 22 starter languages: Android bundles them
+  compressed and extracts each on first use, which keeps the APK at 6.7 MB per
+  ABI and costs 3–32 ms per grammar the first time. See the grammar size spike
+  below. What's left:
+  - Extracted grammars take up to 30 MB of cache once a user has seen all 22
+    languages.
+  - Every grammar we add costs about 5% of its size in the APK, which leaves
+    room for a long tail. A TextMate engine (syntect is MIT) is still an option
+    if it doesn't.
 
 - **Library maturity.**
   - tree-house is at 0.x and its API changes between releases.
@@ -921,6 +1064,4 @@ These are product calls, not technical ones:
 
 - **License.** GPL or Apache/MIT? This mostly matters for what we can borrow and
   for F-Droid.
-- **Distribution.** Google Play, F-Droid, or both? This affects grammar
-  packaging.
 - **Name.**

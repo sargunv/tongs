@@ -13,9 +13,13 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   file diff
 - `engine-rs/spike`: CLI that reviews a GitHub PR from git objects alone and
   times each stage
-- `engine-rs/highlight`: syntax highlighting (`tongs-highlight`): statically
-  linked tree-sitter grammars, vendored Helix queries, and a background
-  highlighter with a cache keyed by blob
+- `engine-rs/highlight`: syntax highlighting (`tongs-highlight`): tree-sitter
+  grammars (linked on desktop; on Android, bundled compressed and extracted on
+  first use), vendored Helix queries, and a background highlighter with a cache
+  keyed by blob
+- `engine-rs/grammars`: build tool (`tongs-grammars`) that compiles each grammar
+  into its own compressed shared library for Android; `:engine:buildGrammars`
+  runs it before cargo-ndk
 - `engine-rs/jni`: JNI bindings (`libtongs_jni`) for the Kotlin `engine` module
 - `engine`: Kotlin facade over the engine (`Review`, row model types,
   `FetchSession`, and `ReviewLoader`, which drives a session over HTTP); JVM and
@@ -40,6 +44,9 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   `/tmp/tongs-spike-store`
 - `cargo run --release -p tongs-highlight --example highlight_review`: highlight
   every file in that PR and report throughput and span memory
+- `prepare_languages` example: time extracting, loading, and compiling queries
+  for every language on a device; its doc comment has the cargo-ndk and adb
+  steps
 - `./gradlew :desktopApp:run`: open that PR in the renderer (builds the JNI
   library first). Add `--args="--bench"` to print frame timings, or
   `--args="--screenshot=out.png@<row>"` to render offscreen; add

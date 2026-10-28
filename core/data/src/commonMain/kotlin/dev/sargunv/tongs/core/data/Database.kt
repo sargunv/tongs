@@ -19,6 +19,7 @@ import kotlinx.coroutines.IO
       AccountEntity::class,
       InboxThreadEntity::class,
       InboxSyncEntity::class,
+      InboxViewEntity::class,
       // PR changes; see PullRequestChangesDao.kt.
       PullRequestOverviewEntity::class,
       ViewedFileEntity::class,
@@ -27,14 +28,16 @@ import kotlinx.coroutines.IO
       ReviewThreadEntity::class,
       ReviewCommentEntity::class,
     ],
-  version = 2,
-  autoMigrations = [AutoMigration(from = 1, to = 2)],
+  version = 3,
+  autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
 )
 @ConstructedBy(TongsDatabaseConstructor::class)
 abstract class TongsDatabase : RoomDatabase() {
   abstract fun accounts(): AccountDao
 
   abstract fun inbox(): InboxDao
+
+  abstract fun inboxViews(): InboxViewDao
 
   abstract fun pullRequestChanges(): PullRequestChangesDao
 }

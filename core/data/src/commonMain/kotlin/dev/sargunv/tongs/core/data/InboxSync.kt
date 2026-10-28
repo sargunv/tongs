@@ -1,13 +1,19 @@
 package dev.sargunv.tongs.core.data
 
 import androidx.room3.withWriteTransaction
+import dev.sargunv.tongs.forge.api.ForgeException
 import dev.sargunv.tongs.forge.api.InboxPoll
 import dev.sargunv.tongs.forge.api.InboxThread
+import dev.sargunv.tongs.forge.api.NotificationReason
+import dev.sargunv.tongs.forge.api.RepoRef
+import dev.sargunv.tongs.forge.api.Subject
+import dev.sargunv.tongs.forge.api.SubjectType
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
 import kotlin.time.Clock
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import kotlinx.coroutines.CancellationException
@@ -37,8 +43,15 @@ class InboxSync(
   private val lock = Mutex()
   private val _refreshing = MutableStateFlow(false)
 
+  private val hydrationBackoff = mutableMapOf<Long, Instant>()
+  private val lastFullPoll = mutableMapOf<Long, Instant>()
+  private val _hydrationCost = MutableStateFlow(0)
+
   /** True while [refresh] runs. */
   val refreshing: StateFlow<Boolean> = _refreshing
+
+  /** Rate limit units hydration has cost this session, as forges report them. */
+  val hydrationCost: StateFlow<Int> = _hydrationCost
 
   /**
    * Polls every account whenever it's due, until cancelled. Polls at once for accounts whose
@@ -71,7 +84,7 @@ class InboxSync(
   suspend fun refresh() {
     _refreshing.value = true
     try {
-      for (account in db.accounts().all()) poll(account.id)
+      for (account in db.accounts().all()) poll(account.id, full = true)
     } finally {
       _refreshing.value = false
     }
@@ -83,21 +96,33 @@ class InboxSync(
     val last =
       state.lastPolledAt?.let(Instant::fromEpochMilliseconds) ?: return Instant.DISTANT_PAST
     val interval = state.pollIntervalSeconds?.seconds ?: DEFAULT_POLL_INTERVAL
-    // After an error, back off to at least the default.
-    return last + if (state.lastError != null) maxOf(interval, ERROR_BACKOFF) else interval
+    // After an error, back off to at least the default, or until the forge says to retry.
+    val due = last + if (state.lastError != null) maxOf(interval, ERROR_BACKOFF) else interval
+    val retry = state.retryAt?.let(Instant::fromEpochMilliseconds)
+    return if (retry != null && retry > due) retry else due
   }
 
-  /** Polls one account once, conditionally, and stores the result. */
-  suspend fun poll(accountId: Long) = lock.withLock {
+  /**
+   * Polls one account once and stores the result, then hydrates what changed. Usually the poll is
+   * conditional on the cursor, so it asks only for what changed since; [full] asks for the whole
+   * inbox instead, which is how threads marked done elsewhere are noticed. The first poll of a
+   * session is full, then one every [FULL_POLL_INTERVAL], and every refresh.
+   */
+  suspend fun poll(accountId: Long, full: Boolean = false) = lock.withLock {
     val state = dao.syncState(accountId)
     val now = clock.now().toEpochMilliseconds()
+    val lastFull = lastFullPoll[accountId]
+    val fullPoll = full || lastFull == null || clock.now() - lastFull >= FULL_POLL_INTERVAL
+    val cursor = state?.cursor.takeUnless { fullPoll }
     val result =
       try {
         // Without a token or the capability, record the error, so the account isn't retried
         // until its backoff passes.
         val client = clients.client(accountId) ?: error("No token for this account")
-        val inbox = client.inbox ?: error("This account's token can't read notifications")
-        inbox.poll(state?.cursor)
+        val inbox =
+          client.inbox
+            ?: throw ForgeException.NoAccess("This account's token can't read notifications")
+        inbox.poll(cursor).also { if (fullPoll) lastFullPoll[accountId] = clock.now() }
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -108,6 +133,13 @@ class InboxSync(
             pollIntervalSeconds = state?.pollIntervalSeconds,
             lastPolledAt = now,
             lastError = e.message ?: e.toString(),
+            errorKind = e.problemKind().name,
+            retryAt = (e as? ForgeException.RateLimited)?.resetAt?.toEpochMilliseconds(),
+            lastSyncedAt = state?.lastSyncedAt,
+            sso =
+              (e as? ForgeException.SsoRequired)?.let {
+                encodeSso(listOf(it.authorization.toNotice()))
+              } ?: state?.sso,
           ),
         )
         return@withLock
@@ -115,51 +147,112 @@ class InboxSync(
     val interval = result.pollInterval?.inWholeSeconds ?: state?.pollIntervalSeconds
     when (result) {
       is InboxPoll.NotModified ->
-        dao.upsertSyncState(InboxSyncEntity(accountId, state?.cursor, interval, now, null))
-      is InboxPoll.Changed -> {
+        dao.upsertSyncState(
+          InboxSyncEntity(
+            accountId = accountId,
+            cursor = state?.cursor,
+            pollIntervalSeconds = interval,
+            lastPolledAt = now,
+            lastError = null,
+            lastSyncedAt = now,
+            // A 304 says nothing new about SSO; keep what the last full answer said.
+            sso = state?.sso?.takeIf { state.lastError == null },
+          ),
+        )
+      is InboxPoll.Changed ->
         db.withWriteTransaction {
           merge(accountId, result)
-          dao.upsertSyncState(InboxSyncEntity(accountId, result.cursor, interval, now, null))
+          dao.upsertSyncState(
+            InboxSyncEntity(
+              accountId = accountId,
+              cursor = result.cursor,
+              pollIntervalSeconds = interval,
+              lastPolledAt = now,
+              lastError = null,
+              lastSyncedAt = now,
+              sso = encodeSso(result.ssoRequired.map { it.toNotice() }),
+            ),
+          )
         }
-        hydrate(accountId, result.threads)
-      }
     }
+    hydrate(accountId)
   }
 
   /**
-   * Writes the forge's view of each thread, keeping local state, and deletes threads the poll shows
-   * were marked done elsewhere: those it covers but doesn't include.
+   * Writes the forge's view of each unread thread, keeping local state, then settles the stored
+   * threads the poll covers but doesn't list: they aren't unread on the forge anymore. Those
+   * triaged here stay, read, until they're done here; the rest were read or done elsewhere, which
+   * GitHub doesn't tell apart, and go.
    */
   private suspend fun merge(accountId: Long, poll: InboxPoll.Changed) {
     val existing = dao.threads(accountId).associateBy { it.id }
     dao.upsert(poll.threads.map { it.toEntity(accountId, existing[it.id]) })
     val seen = poll.threads.mapTo(HashSet()) { it.id }
     val coveredFrom = poll.threads.minOfOrNull { it.updatedAt.toEpochMilliseconds() }
-    val gone =
+    // Threads in organizations the forge hid for SSO may be missing without having changed.
+    val hiddenOrgs = poll.ssoRequired.mapNotNullTo(HashSet()) { it.organization?.lowercase() }
+    val missing =
       existing.values.filter {
-        it.id !in seen && (poll.complete || (coveredFrom != null && it.updatedAt >= coveredFrom))
+        it.id !in seen &&
+          it.repoOwner.lowercase() !in hiddenOrgs &&
+          (poll.complete || (coveredFrom != null && it.updatedAt >= coveredFrom))
       }
+    val (stay, gone) = missing.partition { it.kept || it.pendingDone || it.pendingRead }
     if (gone.isNotEmpty()) dao.delete(accountId, gone.map { it.id })
+    val nowRead = stay.filter { it.unread }
+    if (nowRead.isNotEmpty()) dao.markReadElsewhere(accountId, nowRead.map { it.id })
   }
 
-  private suspend fun hydrate(accountId: Long, threads: List<InboxThread>) {
+  /**
+   * Hydrates the account's threads whose latest update hasn't been, newest first, up to
+   * [HYDRATION_LIMIT] a poll. A thread is hydrated once per update: reading it doesn't change what
+   * it says, so its line keeps saying what was new when it last changed. After a failure, waits
+   * [ERROR_BACKOFF] before trying again, so a broken hydration doesn't cost every poll.
+   */
+  private suspend fun hydrate(accountId: Long) {
+    val now = clock.now()
+    if ((hydrationBackoff[accountId] ?: Instant.DISTANT_PAST) > now) return
     val hydrator = clients.client(accountId)?.inboxHydrator ?: return
+    val threads = dao.unhydrated(accountId, HYDRATION_LIMIT)
     if (threads.isEmpty()) return
-    val hydrations =
+    val hydration =
       try {
-        hydrator.hydrate(threads)
+        hydrator.hydrate(threads.map { it.toThread() })
       } catch (e: CancellationException) {
         throw e
       } catch (_: Exception) {
+        hydrationBackoff[accountId] = now + ERROR_BACKOFF
         return
       }
-    for (h in hydrations) dao.setHydration(accountId, h.threadId, h.subjectState, h.whatsNew)
+    hydration.cost?.let { cost -> _hydrationCost.value += cost }
+    val updatedAt = threads.associate { it.id to it.updatedAt }
+    db.withWriteTransaction {
+      for (h in hydration.threads) {
+        dao.setHydration(
+          accountId = accountId,
+          id = h.threadId,
+          updatedAt = updatedAt[h.threadId] ?: continue,
+          subjectState = h.subjectState,
+          stateReason = h.stateReason,
+          isDraft = h.isDraft,
+          checks = h.checks,
+          reviewDecision = h.reviewDecision,
+          whatsNew = h.whatsNew,
+        )
+      }
+    }
   }
 
   companion object {
     /** GitHub's usual `X-Poll-Interval`, for forges that don't say. */
     val DEFAULT_POLL_INTERVAL: Duration = 60.seconds
     val ERROR_BACKOFF: Duration = 120.seconds
+
+    /** How often a poll asks for the whole inbox rather than what changed. */
+    val FULL_POLL_INTERVAL: Duration = 15.minutes
+
+    /** The most threads one poll hydrates; GitHub's take three GraphQL points. */
+    const val HYDRATION_LIMIT = 150
   }
 }
 
@@ -184,8 +277,27 @@ internal fun InboxThread.toEntity(accountId: Long, old: InboxThreadEntity?): Inb
     pendingDone = old?.pendingDone ?: false,
     localUnread = old?.localUnread ?: false,
     snoozedUntil = old?.snoozedUntil,
-    // Hydration describes the thread as of its last update; a newer update makes it stale.
+    kept = old?.kept ?: false,
+    // Hydration describes the thread as of an update. The state is still the best guess after a
+    // newer one, but what's new isn't until hydration says again.
     subjectState = old?.subjectState,
     whatsNew = old?.whatsNew?.takeIf { old.updatedAt == updated },
+    stateReason = old?.stateReason,
+    isDraft = old?.isDraft ?: false,
+    checks = old?.checks,
+    reviewDecision = old?.reviewDecision,
+    hydratedUpdatedAt = old?.hydratedUpdatedAt,
   )
 }
+
+/** The forge's fields, back as the forge model, for hydration. */
+internal fun InboxThreadEntity.toThread() =
+  InboxThread(
+    id = id,
+    repo = RepoRef(repoOwner, repoName),
+    subject = Subject(title, SubjectType.of(subjectType), subjectNumber, webUrl),
+    reason = NotificationReason.of(reason),
+    unread = unread,
+    updatedAt = Instant.fromEpochMilliseconds(updatedAt),
+    lastReadAt = lastReadAt?.let(Instant::fromEpochMilliseconds),
+  )

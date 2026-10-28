@@ -5,6 +5,7 @@ import dev.sargunv.tongs.forge.api.InboxPoll
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
@@ -28,7 +29,10 @@ class InboxRepositoryTest {
       )
     InboxSync(db, clients, virtualClock()).poll(account)
     inbox.gate = CompletableDeferred()
-    return account to InboxRepository(db, clients, backgroundScope, virtualClock())
+    val repository = InboxRepository(db, clients, backgroundScope, virtualClock())
+    // These tests are about what happens once the forge is told; undo has its own.
+    repository.undoWindow = Duration.ZERO
+    return account to repository
   }
 
   private suspend fun InboxRepository.visible() = inbox().first().map { it.id }
@@ -90,5 +94,87 @@ class InboxRepositoryTest {
       assertEquals(true, back.first().isUnread)
       cancelAndIgnoreRemainingEvents()
     }
+  }
+}
+
+class InboxUndoTest {
+  private val inbox = FakeInbox()
+
+  private suspend fun kotlinx.coroutines.test.TestScope.setUp(
+    db: TongsDatabase,
+  ): Pair<Long, InboxRepository> {
+    val (account, clients) = signIn(db, inbox)
+    inbox.polls +=
+      InboxPoll.Changed(
+        listOf(thread("1", START - 1.hours), thread("2", START - 2.hours)),
+        complete = true,
+        cursor = "c",
+        pollInterval = 60.seconds,
+      )
+    InboxSync(db, clients, virtualClock()).poll(account)
+    return account to InboxRepository(db, clients, backgroundScope, virtualClock())
+  }
+
+  @Test
+  fun doneWaitsForTheUndoWindow() = dbTest { db ->
+    val dao = db.inbox()
+    val (account, repository) = setUp(db)
+    // Virtual time skips ahead while the test waits on the database, so hold the window open.
+    repository.undoWindow = Duration.INFINITE
+    val undo = repository.markDone(listOf(ThreadKey(account, "1"), ThreadKey(account, "2")))
+    assertEquals(true, dao.thread(account, "1")!!.pendingDone)
+    assertEquals(emptyList(), repository.inbox().first())
+    assertEquals(emptyList(), inbox.calls)
+
+    undo.undo()
+    runCurrent()
+    assertEquals(emptyList(), inbox.calls)
+    assertEquals(false, dao.thread(account, "1")!!.pendingDone)
+    assertEquals(false, dao.thread(account, "2")!!.pendingDone)
+  }
+
+  @Test
+  fun doneGoesOutAfterTheWindowAndUndoIsTooLate() = dbTest { db ->
+    val dao = db.inbox()
+    val (account, repository) = setUp(db)
+    repository.undoWindow = Duration.ZERO
+    val undo = repository.markDone(ThreadKey(account, "1"))
+    runCurrent()
+    assertEquals(listOf("done 1"), inbox.calls)
+    assertNull(dao.thread(account, "1"))
+    undo.undo()
+    assertNull(dao.thread(account, "1"))
+  }
+
+  @Test
+  fun snoozeUndoes() = dbTest { db ->
+    val dao = db.inbox()
+    val (account, repository) = setUp(db)
+    val undo = repository.snooze(ThreadKey(account, "1"), START + 1.hours)
+    assertEquals(listOf("2"), repository.inbox().first().map { it.id })
+    assertEquals(listOf("1"), repository.snoozed().first().map { it.id })
+    undo.undo()
+    assertEquals(listOf("1", "2"), repository.inbox().first().map { it.id })
+    assertNull(dao.thread(account, "1")!!.snoozedUntil)
+  }
+
+  @Test
+  fun sendsWhatAnEarlierRunLeftPending() = dbTest { db ->
+    val dao = db.inbox()
+    val (account, clients) = signIn(db, inbox)
+    inbox.polls +=
+      InboxPoll.Changed(
+        listOf(thread("1", START)),
+        complete = true,
+        cursor = "c",
+        pollInterval = null,
+      )
+    InboxSync(db, clients, virtualClock()).poll(account)
+    // As if the app closed inside the undo window.
+    dao.setPendingDone(account, "1", true)
+    InboxRepository(db, clients, backgroundScope, virtualClock())
+    runCurrent()
+    assertEquals(listOf("done 1"), inbox.calls)
+    assertNull(dao.thread(account, "1"))
   }
 }

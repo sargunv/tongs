@@ -171,6 +171,7 @@ fun PullRequestChangesScreen(viewModel: PullRequestChangesViewModel, onBack: () 
     val overview = controller.overview
     val canVerdict = overview?.viewerReviewRequested == true && !overview.viewerDidAuthor
     val pending = controller.drafts.size
+    val bottomBar = !wide && (canVerdict || pending > 0)
     Scaffold(
       snackbarHost = { SnackbarHost(snackbars) },
       topBar = {
@@ -206,7 +207,7 @@ fun PullRequestChangesScreen(viewModel: PullRequestChangesViewModel, onBack: () 
         )
       },
       bottomBar = {
-        if (!wide && (canVerdict || pending > 0)) {
+        if (bottomBar) {
           Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
             Row(
               horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
@@ -223,7 +224,9 @@ fun PullRequestChangesScreen(viewModel: PullRequestChangesViewModel, onBack: () 
       },
       contentWindowInsets = WindowInsets(0),
     ) { padding ->
-      Row(Modifier.padding(padding).fillMaxSize().imePadding()) {
+      // Edge to edge; the bottom bar keeps clear of the navigation bar when it shows.
+      val insets = if (bottomBar) Modifier else Modifier.navigationBarsPadding()
+      Row(Modifier.padding(padding).fillMaxSize().then(insets).imePadding()) {
         if (wide && showTree) {
           FileTreePane(
             controller,

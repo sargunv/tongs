@@ -75,7 +75,8 @@ class NotificationsTest {
     val request = requests.single()
     assertEquals("Tue, 28 Oct 2026 10:00:00 GMT", request.headers[HttpHeaders.IfModifiedSince])
     assertEquals("Bearer token", request.headers[HttpHeaders.Authorization])
-    assertEquals("true", request.url.parameters["all"])
+    // Unread only: with all=true, GitHub lists done threads too.
+    assertNull(request.url.parameters["all"])
   }
 
   @Test
@@ -83,7 +84,7 @@ class NotificationsTest {
     val http = client { request ->
       val page = request.url.parameters["page"]?.toInt() ?: 1
       val body = "[${notification("$page", "2026-10-2${8 - page}T00:00:00Z")}]"
-      val link = """<https://api.github.com/notifications?all=true&page=${page + 1}>; rel="next""""
+      val link = """<https://api.github.com/notifications?page=${page + 1}>; rel="next""""
       Triple(
         HttpStatusCode.OK,
         body,
@@ -127,6 +128,18 @@ class NotificationsTest {
     assertEquals("WorkflowRun", thread.subject.type.raw)
     assertNull(thread.subject.number)
     assertEquals(true, poll.complete)
+  }
+
+  @Test
+  fun aPollWithACursorIsADelta() = runTest {
+    // GitHub answers a changed inbox with only the threads updated since If-Modified-Since.
+    val http = client {
+      Triple(HttpStatusCode.OK, "[${notification("1", "2026-10-28T00:00:00Z")}]", emptyMap())
+    }
+    val poll =
+      GitHubNotifications(http, Instance.GitHubDotCom, "token")
+        .poll("Tue, 27 Oct 2026 10:00:00 GMT")
+    assertEquals(false, assertIs<InboxPoll.Changed>(poll).complete)
   }
 
   @Test

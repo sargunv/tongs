@@ -29,27 +29,35 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   in `jvmAndAndroidMain`, and the Android target packages `libtongs_jni` for
   arm64-v8a and x86_64
 - `forge/api`: the forge-neutral model: `Instance`, `Account`, `Capability`,
-  open enums (`NotificationReason`, `SubjectType`), and the ports each forge
-  adapter implements: `ForgeAdapter` (registered in a map by `ForgeKind`),
-  `AuthProvider` with the OAuth device flow, `InboxSource`, `InboxHydrator`,
-  `ReviewSource`, and `PullRequestReviews` (threads, viewed state, submitting a
-  review) with the neutral `ReviewAnchor`
-- `forge/github`: the GitHub adapter: notifications REST, token checks through
-  Apollo GraphQL (`src/commonMain/graphql`, with GitHub's public schema), the
-  device flow, git smart HTTP and `loadPullRequestReview` for reviews, and
+  open enums (`NotificationReason`, `SubjectType`), typed failures
+  (`ForgeException`), what's new on a thread (`SubjectActivity`,
+  `summarizeWhatsNew`), and the ports each forge adapter implements:
+  `ForgeAdapter` (registered in a map by `ForgeKind`), `AuthProvider` with the
+  OAuth device flow, `InboxSource`, `InboxHydrator`, `ReviewSource`, and
+  `PullRequestReviews` (threads, viewed state, submitting a review) with the
+  neutral `ReviewAnchor`
+- `forge/github`: the GitHub adapter: notifications REST (unread only; see
+  `docs/design.md`), inbox hydration (`GitHubHydrator`, which batches
+  `InboxHydration.graphql` under aliases), error mapping (`GitHubErrors.kt`:
+  rate limits, scopes, SAML SSO), token checks through Apollo GraphQL
+  (`src/commonMain/graphql`, with GitHub's public schema), the device flow, git
+  smart HTTP and `loadPullRequestReview` for reviews, and
   `GitHubPullRequestReviews` (GraphQL reads and viewed state, REST review
   submission, and the anchor's lowering)
 - `core/net`: the shared Ktor client (OkHttp on both platforms) and conditional
   request, poll interval, `Link`, and rate limit helpers
 - `core/data`: Room 3 (`TongsDatabase`, schemas in `core/data/schemas`), the
-  inbox sync (`InboxSync`), optimistic triage (`InboxRepository`), the PR
-  changes screen's store (`PullRequestChangesRepository`: viewed files keyed by
-  path and blob, the pending review's drafts, review threads; tables prefixed
-  `changes_`), accounts and per-account forge clients, settings in DataStore,
-  and `TokenStore` implementations (Android Keystore; desktop OS keychain with a
-  private-file fallback)
+  inbox sync (`InboxSync`, with hydration and typed sync status), triage with
+  undo (`InboxRepository`), filters in GitHub's vocabulary (`InboxQuery`), saved
+  views (`InboxViewRepository`), the PR changes screen's store
+  (`PullRequestChangesRepository`: viewed files keyed by path and blob, the
+  pending review's drafts, review threads; tables prefixed `changes_`), accounts
+  and per-account forge clients, settings in DataStore, and `TokenStore`
+  implementations (Android Keystore; desktop OS keychain with a private-file
+  fallback)
 - `core/ui`: the design system: `TongsTheme` (Material 3 Expressive), density
   per platform, `TongsIcons` (Material Symbols), `ListRow`, `SwipeActionsBox`,
+  `stateColors()` (open, merged, closed, and checks, harmonized with the theme),
   `TongsTopAppBar`, `TongsNavigationSuite`, and `ReviewIcons`
 - `core/navigation`: the sealed `Route` hierarchy, `Navigator`, and
   `RouteEntries`, the seam through which each feature adds its screens
@@ -104,8 +112,12 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   also marks a file viewed and submits the review. Without `--api-url` it never
   mutates. Set `XDG_DATA_HOME` to a scratch dir for these runs
 - `./gradlew :feature:inbox:verifyRoborazziJvm`: compare the inbox against its
-  screenshots in `feature/inbox/src/jvmTest/snapshots`; `recordRoborazziJvm`
-  updates them
+  screenshots in `feature/inbox/src/jvmTest/snapshots` (rows, views, filters,
+  grouping, snoozed, and each sync problem, from made-up data);
+  `recordRoborazziJvm` updates them
+- `TONGS_LIVE_TESTS=1 GH_TOKEN=$(gh auth token) ./gradlew :forge:github:jvmTest --tests '*LiveInbox*' -i`:
+  poll and hydrate your real inbox, read-only, and print each row and the
+  GraphQL points it cost
 - `./gradlew :desktopApp:run --args="--spike"`: open that PR in the renderer
   from `/tmp/tongs-spike-store`. Add `--bench` to print frame timings, or
   `--screenshot=out.png@<row>` to render offscreen (either implies `--spike`);
@@ -156,3 +168,6 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   `core/data/schemas`.
 - Don't mutate anything on real PRs while testing (reviews, comments, viewed
   state); use a fake server, as `--changes-screenshots --api-url` allows.
+- Tongs is GPL-3.0-or-later (`LICENSE`). Vendored third-party files keep their
+  own licenses and notices, e.g. Helix's MPL-2.0 queries in
+  `engine-rs/highlight/queries`.

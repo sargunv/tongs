@@ -427,8 +427,10 @@ express that, so its adapter will have to narrow such a range.
 - **GitHub.**
   - Poll `/notifications` with `If-Modified-Since`, respecting
     `X-Poll-Interval`. A 304 doesn't cost rate limit.
-  - Hydrate rows in batches with GraphQL `nodes(ids:)`, so each row shows PR
-    state, review decision, CI rollup, and labels without opening it.
+  - Hydrate rows in batches with GraphQL, so each row shows PR state, review
+    decision, and CI rollup without opening it. Aliases rather than
+    `nodes(ids:)`: notifications carry no subject node IDs, and each thread
+    needs its own `since`.
   - "Done" is `DELETE /notifications/threads/{id}`.
 - **Forgejo.** Poll `/notifications/new`, then fetch. Forgejo notifications have
   no reasons, and it offers pinning.
@@ -458,23 +460,84 @@ express that, so its adapter will have to narrow such a range.
 - Polling happens only while the app is in the foreground and on resume, since
   push notifications are out of scope.
 - **How sync works, as built.**
-  - Each poll asks for read and unread threads (`all=true`), 50 a page, up to
-    three pages, and only the first page is conditional. The poll interval and
-    `Last-Modified` are stored per account, so a restart within the interval
-    doesn't poll early. After an error, an account waits at least two minutes.
-  - Done threads drop out of GitHub's list, so a poll that covers a thread's
-    update time but doesn't include it means it was marked done elsewhere, and
-    the thread is deleted. A poll that reaches the end covers everything.
-  - Read and done are optimistic: the row changes in Room at once, and a failed
-    API call undoes it with a message. A pending read survives polls that still
-    say unread.
+  - **GitHub can't list what's still in the inbox once it's read.** With
+    `all=true`, the notifications API also returns threads marked done, on the
+    web or with `DELETE /notifications/threads/{id}`, as plain read threads;
+    nothing tells them apart (measured on 2026-10-28: a thread marked done was
+    still listed minutes later, and the owner's `all=true` list held 150 read
+    threads while their web inbox was at zero). Only unread is certain: new
+    activity brings a done thread back unread. So polls ask for unread threads
+    only, and the inbox is those plus the threads triaged in Tongs (read, marked
+    unread, or snoozed here), which stay until they're done here. A thread that
+    stops being unread without being triaged here was read or done elsewhere,
+    and goes.
+  - With `If-Modified-Since`, a changed inbox answers with only the threads
+    updated since, as if `since` were set, not the whole first page. Such a poll
+    covers only what it lists. The first poll of a session, one every 15
+    minutes, and every refresh omit the cursor, so threads read or done
+    elsewhere are noticed. Each poll reads 50 a page, up to three pages. The
+    poll interval and `Last-Modified` are stored per account, so a restart
+    within the interval doesn't poll early.
+  - Failures are typed (`ForgeException`) and stored per account with their
+    kind: offline, token rejected, token can't read notifications, rate limited
+    (sync waits for the reset), SAML SSO required (with the authorization link).
+    A poll that succeeds but that GitHub filtered for SSO
+    (`X-GitHub-SSO: partial-results`) names the organizations, and their threads
+    aren't treated as gone. Otherwise an account waits at least two minutes
+    after an error.
+  - Done waits five seconds before `DELETE` (eleven for "mark all as done"),
+    since GitHub has no way to bring a thread back; undo inside the window
+    cancels it. Reads go at once. A done or read the app didn't get to send,
+    because it closed, goes out on the next start. A failed call undoes the
+    change with a message.
   - **GitHub has no API to mark a thread unread.** Neither REST nor the public
     GraphQL schema has one. So "unread" is local, like snooze, until the thread
     is read again; a forge that has one would advertise `inbox.markUnread`.
   - Snoozing marks the thread unread locally, hides it, and sorts it by the
-    snooze's end once it's back.
-  - Hydration is a seam: `InboxHydrator` gets the threads each poll changed, and
-    its `subjectState` and `whatsNew` land in columns the row already shows.
+    snooze's end once it's back. A snoozed thread stays snoozed through new
+    activity, as in email. `is:snoozed` lists them.
+- **Hydration, as built.** After each poll, threads whose latest update hasn't
+  been hydrated (up to 150, newest first) go to `InboxHydrator`. GitHub's sends
+  one GraphQL request per 50 threads: `InboxHydration.graphql` is one thread's
+  query, checked against the schema and parsed by Apollo, and the request
+  repeats its `repository` field under an alias per thread with the variables
+  suffixed. Each alias reads the subject's state, the head commit's check
+  rollup, the review decision, and `timelineItems(since: lastReadAt, last: 20)`.
+  - A thread is hydrated once per update. Reading it doesn't change its line,
+    which keeps saying what was new when it last changed, like an email's
+    snippet, and saves a request per read.
+  - What's new is summarized forge-neutrally (`summarizeWhatsNew` over
+    `SubjectActivity`), most important first, leaving out your own actions:
+    "Review requested from you", "Merged by alice", "Changes requested by bob",
+    "Checks failed" (failing checks on a commit newer than your last read,
+    whoever pushed it), "2 new comments from alice and bob", "3 new commits".
+  - `timelineItems(since:)` filters commits by their commit date, so commits
+    made before your last read but pushed after it don't count as new.
+  - **Cost, measured with GraphQL's `rateLimit { cost }`:** 1 point per 50
+    threads (two connections each: `commits(last: 1)` and
+    `timelineItems(last: 20)`, so 100 requests, which rounds to 1). A cold sync
+    of 150 threads cost 3 points and took about 4 seconds with the three batches
+    in parallel; an unchanged inbox costs nothing (a 304, and nothing to
+    hydrate); a poll with new activity costs 1 REST request and 1 point. With
+    GitHub's 60-second poll interval that's at most 60 points an hour of the
+    5,000.
+- **Triage and views, as built.**
+  - Rows show the repo and number, the time, the title, GitHub's reason (in the
+    primary color when it asks something of you), and what's new. The icon's
+    color is the subject's state (open green, merged purple, closed red, draft
+    gray; issues closed as completed purple, not planned gray). An open PR's
+    checks and review decision follow as small marks. `InboxRow.draft` is the
+    seam for reply drafts, always null until the thread feature stores them.
+  - Filters use GitHub's vocabulary (`reason:`, `is:pr`, `is:issue`,
+    `is:unread`, `repo:`, `org:`), plus `is:open`, `is:merged`, `is:closed`, and
+    `is:draft` from GitHub's search, and `is:snoozed`. Terms of one kind are
+    alternatives, a leading `-` negates, and anything else matches the title.
+    Saved views are named filters, local in Room, and each can group by repo;
+    the default view is one chronological list.
+  - "Mark all as done" acts on the current view.
+  - Desktop: hover actions over the row's end, and `j`/`k`, Enter or `o`, `e`,
+    `s`, Shift+U, Shift+I, `z` (undo), `/` (filter), `r`, Esc, and `?`. Snooze
+    presets show their times and take number keys.
 
 **Activity feed.**
 
@@ -702,10 +765,14 @@ them together.
 - Helix queries are MPL-2.0. That's fine to bundle unmodified, and changes to
   those files must stay MPL.
 - The `nvim-treesitter` queries are Apache-2.0 but use Neovim-only predicates.
-- **Don't copy Zed's `language`, `editor`, or `languages` crates or its built-in
-  queries.** They're GPL-3.0, which would make the whole app GPL. GPUI and
-  `sum_tree` are Apache-2.0 and safe to borrow from.
-- The app's own license is still undecided. See the questions below.
+- Zed's `language`, `editor`, and `languages` crates and its built-in queries
+  are GPL-3.0, which is compatible with our license. Helix's queries are still
+  the choice, on merit (see highlighting). GPUI and `sum_tree` are Apache-2.0.
+- **Tongs is GPL-3.0-or-later** (decided 2026-10-28). GPLv3 rather than v2,
+  because Apache-2.0 dependencies (gix, Compose, AndroidX) are only compatible
+  with v3. F-Droid is happy with it. Apple's App Store terms conflict with the
+  GPL for code others contributed, which only matters if we ever ship iOS; the
+  owner can relicense their own code, and contributions would then need consent.
 
 ## Spike results
 
@@ -1313,6 +1380,31 @@ Not covered yet:
 - Resizing a Linux.apk window during a load. `configChanges` should keep the
   load, but nobody has watched it happen.
 
+### 2026-10-28: the PR changes screen
+
+The screen, its engine support, and `codeview`'s headers, selection, and
+overlays are described under the pipeline, the renderer, and Navigation and
+screens. What they cost the renderer, measured with `--bench` on #760 and
+alternating `main` with the branch, two runs each:
+
+| Pass, draw CPU p50 / p99 (ms) | Desktop, `main`  | Desktop, branch       | Android, `main`       | Android, branch       |
+| ----------------------------- | ---------------- | --------------------- | --------------------- | --------------------- |
+| Fling, cold                   | 0.07–0.08 / 0.38 | 0.09 / 0.38–0.40      | 0.29–0.32 / 0.72–0.83 | 0.29–0.33 / 0.75–0.91 |
+| Fling, warm                   | 0.07 / 0.20–0.21 | 0.07 / 0.19–0.21      | 0.24–0.29 / 0.70–0.73 | 0.24–0.28 / 0.72–0.81 |
+| Scrub, cold                   | 0.17–0.18 / 0.38 | 0.19–0.20 / 0.39–0.40 | 0.32–0.35 / 0.87      | 0.35–0.43 / 0.85–0.99 |
+| Scrub, warm                   | 0.16 / 0.29–0.30 | 0.19 / 0.35–0.38      | 0.35–0.40 / 0.77–0.93 | 0.35–0.46 / 0.98–1.02 |
+
+- Desktop ran under `xvfb-run` (Skiko's software renderer), so absolute numbers
+  sit below the earlier GPU runs; only the comparison matters. Android ran on a
+  Pixel 9 Pro Fold AVD (API 36, x86_64, `-gpu host`, headless), release builds
+  AOT-compiled with `speed`. Other agents were building on the host throughout.
+- Flinging costs the same. Scrubbing, where every frame lands in a new file,
+  costs 0.02–0.03 ms more on desktop: the header now draws a chevron path and
+  reads its row, and the gutter scans the rows on screen for its width. Frames
+  held at the display rate in every pass.
+- Opening #760 from the store takes 91 ms against 73–75 ms, for classifying
+  files and pairing renames; two renames make it 2,188 files.
+
 ## Plan
 
 0. **Spike the engine first. It's the main risk.**
@@ -1372,6 +1464,4 @@ Not covered yet:
 
 These are product calls, not technical ones:
 
-- **License.** GPL or Apache/MIT? This mostly matters for what we can borrow and
-  for F-Droid.
 - **Name.**

@@ -43,6 +43,7 @@ class InboxEntries(private val viewModel: Provider<InboxViewModel>) : RouteEntri
             ),
           )
         },
+        onSignIn = { navigator.open(Route.SignIn) },
       )
     }
   }

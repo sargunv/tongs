@@ -2,7 +2,7 @@ package dev.sargunv.tongs.feature.review
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -76,7 +76,7 @@ fun suggestionBlock(lines: String): String = "```suggestion\n$lines\n```\n"
  * send action. Ctrl or Cmd+Enter sends, Escape cancels.
  */
 object InlineCommentComposer : CommentComposer {
-  override val inlineRows = 12
+  override val inlineRows = 14
 
   @Composable
   override fun Content(request: CommentRequest, modifier: Modifier) {
@@ -121,7 +121,12 @@ object InlineCommentComposer : CommentComposer {
               }
             },
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // Wraps when narrow, as in a folded phone's diff, rather than clipping the send action.
+        FlowRow(
+          horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+          itemVerticalAlignment = Alignment.CenterVertically,
+          modifier = Modifier.fillMaxWidth(),
+        ) {
           if (request.suggestion != null) {
             TextButton(
               onClick = {
@@ -129,11 +134,11 @@ object InlineCommentComposer : CommentComposer {
                 text.setTextAndPlaceCursorAtEnd(prefix + suggestionBlock(request.suggestion))
               },
             ) {
-              Text("Suggest change")
+              Text("Suggest change", maxLines = 1)
             }
+            Spacer(Modifier.weight(1f))
           }
-          Spacer(Modifier.weight(1f))
-          TextButton(onClick = request.onCancel) { Text("Cancel") }
+          TextButton(onClick = request.onCancel) { Text("Cancel", maxLines = 1) }
           Button(onClick = send, enabled = text.text.isNotBlank()) {
             Text(request.submitLabel, maxLines = 1)
           }

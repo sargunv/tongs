@@ -25,14 +25,39 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   `FetchSession`, and `ReviewLoader`, which drives a session over HTTP); JVM and
   Android targets share the JNI code in `jvmAndAndroidMain`, and the Android
   target packages `libtongs_jni` for arm64-v8a and x86_64
-- `forge/github`: GitHub REST and git smart HTTP with Ktor (the OkHttp engine on
-  JVM and Android), and `loadPullRequestReview`
+- `forge/api`: the forge-neutral model: `Instance`, `Account`, `Capability`,
+  open enums (`NotificationReason`, `SubjectType`), and the ports each forge
+  adapter implements: `ForgeAdapter` (registered in a map by `ForgeKind`),
+  `AuthProvider` with the OAuth device flow, `InboxSource`, `InboxHydrator`, and
+  `ReviewSource`
+- `forge/github`: the GitHub adapter: notifications REST, token checks through
+  Apollo GraphQL (`src/commonMain/graphql`, with GitHub's public schema), the
+  device flow, and git smart HTTP and `loadPullRequestReview` for reviews
+- `core/net`: the shared Ktor client (OkHttp on both platforms) and conditional
+  request, poll interval, `Link`, and rate limit helpers
+- `core/data`: Room 3 (`TongsDatabase`, schemas in `core/data/schemas`), the
+  inbox sync (`InboxSync`), optimistic triage (`InboxRepository`), accounts and
+  per-account forge clients, settings in DataStore, and `TokenStore`
+  implementations (Android Keystore; desktop OS keychain with a private-file
+  fallback)
+- `core/ui`: the design system: `TongsTheme` (Material 3 Expressive), density
+  per platform, `TongsIcons` (Material Symbols), `ListRow`, `SwipeActionsBox`,
+  `TongsTopAppBar`, and `TongsNavigationSuite`
+- `core/navigation`: the sealed `Route` hierarchy, `Navigator`, and
+  `RouteEntries`, the seam through which each feature adds its screens
+- `feature/*`: screens, each with its own `RouteEntries`: `inbox`, `thread`
+  (placeholder), `review` (PR changes; `PullRequestLoad` fetches a PR in the
+  background and `PullRequestReview` shows it as it loads), `auth` (sign-in),
+  `settings`, and `feed` (Activity, placeholder)
 - `codeview`: Compose Multiplatform canvas renderer for code and diffs
-- `feature/review`: the PR screen both apps share: `PullRequestLoad` fetches a
-  PR in the background, and `PullRequestReview` shows it as it loads
-- `desktopApp`: desktop shell; opens a PR, or a pre-filled store for the
-  renderer spike
-- `androidApp`: Android shell; opens a PR
+- `app`: the Metro graph (`AppGraph`) and `TongsApp`, the shared UI root with
+  the navigation shell and list-detail scenes
+- `build-logic`: convention plugins: `tongs.kmp.library` (JVM and Android
+  targets, namespace from the module path) and `tongs.compose`
+- `desktopApp`: desktop shell; runs the app, and keeps the spike modes behind
+  flags
+- `androidApp`: Android shell; `MainActivity` runs the app, and
+  `PullRequestActivity` keeps the account-free PR spike
 
 ## Dev tool commands
 
@@ -49,21 +74,32 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
 - `prepare_languages` example: time extracting, loading, and compiling queries
   for every language on a device; its doc comment has the cargo-ndk and adb
   steps
-- `./gradlew :desktopApp:run`: open that PR in the renderer (builds the JNI
-  library first). Add `--args="--bench"` to print frame timings, or
-  `--args="--screenshot=out.png@<row>"` to render offscreen; add
-  `--no-highlight` to either to turn off syntax highlighting
+- `./gradlew :desktopApp:run`: run the app (builds the JNI library first). Its
+  data goes in `$XDG_DATA_HOME/tongs`; set `XDG_DATA_HOME` to sign in as someone
+  else. Sign-in offers `gh`'s token on desktop
+- `./gradlew :desktopApp:run --args="--app-screenshots=<dir>"`: render the
+  inbox, an open thread, settings, and a PR's changes offscreen with the
+  signed-in account's real data (signs in with `gh`'s token if there's no
+  account)
+- `./gradlew :feature:inbox:verifyRoborazziJvm`: compare the inbox against its
+  screenshots in `feature/inbox/src/jvmTest/snapshots`; `recordRoborazziJvm`
+  updates them
+- `./gradlew :desktopApp:run --args="--spike"`: open that PR in the renderer
+  from `/tmp/tongs-spike-store`. Add `--bench` to print frame timings, or
+  `--screenshot=out.png@<row>` to render offscreen (either implies `--spike`);
+  add `--no-highlight` to turn off syntax highlighting
 - `./gradlew :androidApp:installRelease`: install the Android app, signed with
-  the debug key (builds the JNI library with cargo-ndk first). It fetches
-  maplibre/maplibre-native-ffi#760 in the app and shows it as it loads. Objects
-  persist per repo in the app's cache dir
-- `adb shell am start -n dev.sargunv.tongs/.android.MainActivity --es pr owner/repo#N`:
-  open another PR; a github.com PR link as the intent's data works too. Public
-  repos need no token; debuggable builds (`installDebug`) take
-  `--es token <token>`. For timing runs, add `--ez cold true` to empty the
-  repo's store first, `--ez exitWhenLoaded true` to log timings under the
-  `Tongs` tag and exit, `--ef jump 0.6` to scroll 60% in as soon as the headers
-  show, and `--ez highlight false` to turn off syntax highlighting
+  the debug key (builds the JNI library with cargo-ndk first)
+- `adb shell am start -n dev.sargunv.tongs/.android.PullRequestActivity`: the PR
+  spike, without an account. It fetches maplibre/maplibre-native-ffi#760 in the
+  app and shows it as it loads; objects persist per repo in the app's cache dir.
+  Add `--es pr owner/repo#N` to open another PR; a github.com PR link as the
+  intent's data works too. Public repos need no token; debuggable builds
+  (`installDebug`) take `--es token <token>`. For timing runs, add
+  `--ez cold true` to empty the repo's store first, `--ez exitWhenLoaded true`
+  to log timings under the `Tongs` tag and exit, `--ef jump 0.6` to scroll 60%
+  in as soon as the headers show, and `--ez highlight false` to turn off syntax
+  highlighting
 - `--ez bench true` on the same command: once the PR is loaded, log frame
   timings for the desktop's fling and scrub passes, then exit. Run
   `adb shell am force-stop dev.sargunv.tongs` before each run, so highlights
@@ -85,3 +121,13 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   with `git upload-pack`
 
 ## Project invariants
+
+- Layering: `feature/*` modules depend on `core/*` and `forge/api`, not on a
+  forge adapter or on each other; `app` wires them. Add a screen by adding a
+  `Route` and an entry in the feature's `RouteEntries`.
+- Screens read from Room through repositories in `core/data`, and write through
+  them, optimistically; they don't call forge clients directly.
+- Shared UI (theme, rows, app bars, navigation) lives in `core/ui`; features
+  don't fork it. Desktop differs through `TongsDensity`, not other components.
+- Room schema changes bump `TongsDatabase`'s version and commit the exported
+  schema in `core/data/schemas`.

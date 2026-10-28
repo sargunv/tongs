@@ -364,7 +364,20 @@ and new line numbers, so every adapter can lower it:
   - Codeberg would come first.
   - Longer term, ask Forgejo to ship the app as a built-in default application,
     the way it ships `tea` and git-credential-oauth.
-- **Token storage.** Android uses the Keystore. Desktop uses the OS keychain.
+- **Token storage.** Tokens never go in the database.
+  - Android encrypts each with an AES-GCM key held in the Android Keystore and
+    keeps the ciphertext in the no-backup dir, since the key can't move to
+    another device. The app opts out of backup.
+  - Desktop uses the OS keychain through java-keyring: the Secret Service (GNOME
+    Keyring, KWallet) on Linux, Keychain on macOS, Credential Manager on
+    Windows. Without one, tokens go in a file only the user can read, in the
+    app's data dir, which is what `gh` does too.
+- **What's built.** Sign-in takes a classic PAT and checks it with GraphQL
+  `viewer`, reading its scopes from `X-OAuth-Scopes`. A token missing requested
+  scopes still signs in, with a warning; `repo` also grants the notifications
+  API. Desktop can import `gh auth token` as a developer shortcut. The device
+  flow is modeled (`DeviceFlow`, `awaitToken`, and GitHub's implementation) but
+  has no UI until there's an OAuth App client ID.
 
 ## Home screens
 
@@ -403,6 +416,24 @@ and new line numbers, so every adapter can lower it:
   - Drafts show on their thread's row, like email drafts.
 - Polling happens only while the app is in the foreground and on resume, since
   push notifications are out of scope.
+- **How sync works, as built.**
+  - Each poll asks for read and unread threads (`all=true`), 50 a page, up to
+    three pages, and only the first page is conditional. The poll interval and
+    `Last-Modified` are stored per account, so a restart within the interval
+    doesn't poll early. After an error, an account waits at least two minutes.
+  - Done threads drop out of GitHub's list, so a poll that covers a thread's
+    update time but doesn't include it means it was marked done elsewhere, and
+    the thread is deleted. A poll that reaches the end covers everything.
+  - Read and done are optimistic: the row changes in Room at once, and a failed
+    API call undoes it with a message. A pending read survives polls that still
+    say unread.
+  - **GitHub has no API to mark a thread unread.** Neither REST nor the public
+    GraphQL schema has one. So "unread" is local, like snooze, until the thread
+    is read again; a forge that has one would advertise `inbox.markUnread`.
+  - Snoozing marks the thread unread locally, hides it, and sorts it by the
+    snooze's end once it's back.
+  - Hydration is a seam: `InboxHydrator` gets the threads each poll changed, and
+    its `subjectState` and `whatsNew` land in columns the row already shows.
 
 **Activity feed.**
 
@@ -428,6 +459,17 @@ and new line numbers, so every adapter can lower it:
   - On phones, panes stack.
   - On tablets and desktop, the inbox list sits beside the open thread.
   - PR changes use three panes: file tree, diff, and conversation or comments.
+- **As built.** Each `Route` declares its pane: list, detail, or full window.
+  - Two panes from medium width up (600 dp), not Material's default of expanded
+    (840 dp), so an unfolded foldable around 700 dp shows the list beside the
+    thread. The list starts at half the width on medium windows and 40% on wider
+    ones, and a drag handle resizes it.
+  - The detail pane is a rounded card a tone off the background.
+  - Opening a thread while another is open replaces it rather than stacking.
+  - A bottom bar when folded, hidden on screens below the top level; a rail
+    otherwise, always shown.
+  - PR changes and Settings take the full window beside the rail; Activity too,
+    until it has items to open.
 
 **Screens.**
 
@@ -511,14 +553,14 @@ All versions verified against releases on 2026-10-28.
 | Area                 | Choice                                                                                                                                         |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | Language and UI      | Kotlin 2.4.21, Compose Multiplatform 1.12.2, AGP 9.4.1, Gradle 9.8 with a version catalog                                                      |
-| Material             | Material 3 (Expressive components arrive with CMP 1.13), material3-adaptive 1.3                                                                |
+| Material             | Material 3 Expressive (`org.jetbrains.compose.material3` 1.12.0-alpha03), material3-adaptive 1.3.0, material-kolor 5 for desktop colors        |
 | Navigation and state | Navigation 3 (JetBrains 1.2.0), KMP ViewModel 2.11                                                                                             |
 | DI                   | Metro 1.5 (forge adapters registered as a multibinding map)                                                                                    |
-| Data                 | Room 3 for persistence, DataStore for preferences, Ktor 3.6, Apollo 5.2, kotlinx.serialization 1.12                                            |
-| Images               | Coil 3                                                                                                                                         |
+| Data                 | Room 3.0 (`androidx.room3`) with bundled SQLite 2.7, DataStore 1.3, Ktor 3.6, Apollo 5.2, kotlinx.serialization 1.12, kotlinx-datetime 0.8     |
+| Images               | Coil 3, once there are avatars to load                                                                                                         |
 | Engine               | Rust with gix-protocol, gix-pack, gix-diff, gix-attributes, imara-diff, tree-house plus Helix queries, and `linguist`; UniFFI 0.32 plus jni-rs |
-| Testing              | kotlin.test, Turbine, Compose UI tests, Roborazzi on desktop; cargo tests and criterion benches for the engine                                 |
-| Formatting and lint  | ktfmt through dprint, detekt 2                                                                                                                 |
+| Testing              | kotlin.test, Turbine, Ktor's mock engine, Compose UI tests, Roborazzi 1.77 on desktop; cargo tests and criterion benches for the engine        |
+| Formatting and lint  | ktfmt through dprint; detekt 2 once it's out of alpha                                                                                          |
 | Desktop packaging    | Compose native distributions; Conveyor if we want auto-update                                                                                  |
 
 **Android floor.** minSdk 31 (Android 12), compileSdk and targetSdk 37, NDK r30
@@ -542,15 +584,45 @@ All versions verified against releases on 2026-10-28.
   Kotlin, so there's no `org.jetbrains.kotlin.android` plugin. AGP 9.5.0 came
   out on 2026-10-28, after this table was checked.
 
-**Module layout.** This follows JetBrains' 2026 structure, split further by
-feature:
+**Corrections from building the app,** on 2026-10-28:
 
-- `androidApp`, `desktopApp`: thin application shells
-- `core/{model,data,net,ui}`
-- `forge/{api,github,gitea,forgejo}`
+- **Expressive is available now.** CMP versions Material 3 apart from the rest
+  of Compose, and the one CMP 1.12.2 pairs with, 1.12.0-alpha03 (Jetpack 1.5.0-
+  alpha22), has `MaterialExpressiveTheme`, `MotionScheme.expressive()`, and the
+  Expressive components, behind `ExperimentalMaterial3ExpressiveApi`. There's no
+  stable CMP Material 3 past 1.9.0.
+- **Room 3 is its own artifact and package:** `androidx.room3:room3-*` and
+  `androidx.room3.*`, KSP only, and a `SQLiteDriver` is required. Its builders
+  need no `Context`, so the database opens from common code with a path.
+- **Material icons stopped at 1.7.3**, deprecated in favor of Material Symbols.
+  `TongsIcons` keeps the few we use as path data.
+- **Apollo's Ktor engine** (`apollo-engine-ktor`) is only at 1.0.0-alpha, so
+  `forge/github` has a 50-line adapter that sends Apollo's requests through the
+  app's Ktor client.
+- **detekt 2** is still alpha (2.0.0-alpha.6), so it isn't set up yet.
+- **Nucleus** (2.5.18) isn't adopted. Its decorated window needs
+  `nucleusApplication` and its Tao windowing backend in place of AWT, or a
+  deprecated backend that needs the JetBrains Runtime. That would change the
+  window under the spike modes, which use AWT and Skiko's render API. Revisit it
+  for a custom title bar once the app's chrome settles.
+
+**Module layout,** as built. Layering is strict: features see the core modules
+and `forge/api`, never a forge adapter or each other, and the app module wires
+them together.
+
+- `androidApp`, `desktopApp`: thin shells that supply an `AppEnvironment`
+  (directories, token store) and show `TongsApp`
+- `app`: the Metro graph and the UI root
+- `feature/{inbox,thread,review,auth,settings,feed}`: screens, each adding its
+  routes through a `RouteEntries` contributed to the graph. `feature/review`
+  still also depends on `forge/github`, for the spike entry points
+- `core/{navigation,ui,data,net}`: routes and navigator, design system, Room
+  store and sync, HTTP. The neutral model lives in `forge/api` rather than a
+  separate `core/model`
+- `forge/{api,github}`, later `gitea` and `forgejo`
 - `engine` (Kotlin facade) and `engine-rs` (Cargo workspace)
 - `codeview`
-- `feature/{inbox,feed,thread,review,repo,auth,settings}`
+- `build-logic`: convention plugins for KMP libraries and Compose
 
 ## Licensing
 
@@ -1180,10 +1252,11 @@ Not covered yet:
      - fetches of explicit OIDs work at scale
      - undocumented git rate limits don't bite
      - grammar size is acceptable on Android
-1. **Skeleton.**
-   - Accounts: GitHub device flow and PAT.
+1. **Skeleton.** Built on 2026-10-28, except where noted:
+   - Accounts: GitHub PAT. The device flow is modeled but waits on an OAuth App.
    - Room store and sync.
-   - Inbox and read-only thread view.
+   - Inbox. The thread view is a placeholder with a link out and the PR's
+     changes.
    - Android and desktop shells.
 2. **Review.**
    - Full PR review: viewed state, comment drafts, submitting reviews, merging,

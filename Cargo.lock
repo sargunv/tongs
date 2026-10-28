@@ -1508,6 +1508,7 @@ name = "tongs-jni"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gix-hash",
  "jni",
  "tongs-engine",
 ]

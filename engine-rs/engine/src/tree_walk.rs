@@ -29,6 +29,8 @@ pub struct Change {
 pub struct TreeWalk {
     /// Directory pairs still to compare. `None` means absent on that side.
     frontier: Vec<(String, Option<ObjectId>, Option<ObjectId>)>,
+    /// Directory depth of the frontier; the root trees are depth 0.
+    depth: u32,
     pub changes: Vec<Change>,
 }
 
@@ -36,12 +38,18 @@ impl TreeWalk {
     pub fn new(old_root: ObjectId, new_root: ObjectId) -> Self {
         Self {
             frontier: vec![(String::new(), Some(old_root), Some(new_root))],
+            depth: 0,
             changes: Vec::new(),
         }
     }
 
     pub fn is_done(&self) -> bool {
         self.frontier.is_empty()
+    }
+
+    /// Depth of the trees [`Self::missing`] returns.
+    pub fn depth(&self) -> u32 {
+        self.depth
     }
 
     pub fn missing(&self, store: &Store) -> Vec<ObjectId> {
@@ -100,6 +108,7 @@ impl TreeWalk {
             }
         }
         self.frontier = next;
+        self.depth += 1;
         Ok(())
     }
 

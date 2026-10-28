@@ -7,6 +7,8 @@ enum class RowKind {
   Added,
   Removed,
   Binary,
+  /** Stands in for a file's diff until its blobs arrive. */
+  Loading,
 }
 
 /** One fixed-height row of a review. Line numbers are 1-based; 0 means absent on that side. */

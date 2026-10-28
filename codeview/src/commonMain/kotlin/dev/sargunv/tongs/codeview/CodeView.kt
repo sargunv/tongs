@@ -276,7 +276,8 @@ private fun DrawScope.drawRow(
         drawRect(colors.removedGutter, Offset(0f, y), Size(textLeft - painter.advance, lineHeight))
       }
       RowKind.Context,
-      RowKind.Binary -> Unit
+      RowKind.Binary,
+      RowKind.Loading -> Unit
     }
     val digits = painter.advance * GUTTER_DIGITS
     if (row.oldLine > 0) drawLineNumber(painter, row.oldLine, digits, y, colors.gutterText)

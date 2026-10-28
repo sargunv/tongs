@@ -1,8 +1,11 @@
 //! The review row model: every changed file in a diff, flattened into one
 //! sequence of fixed-height rows that a renderer can index directly.
 //!
-//! This spike version builds all rows eagerly. Diffing the 576k-line
-//! maplibre PR takes ~50ms, so laziness can wait until fetching is wired in.
+//! A [`Review`] is an immutable snapshot. Each file's rows and text live in an
+//! `Arc<FileEntry>`, so while a fetch is still running, each new snapshot
+//! shares every file that hasn't changed and only rebuilds the per-file prefix
+//! sums. A file whose blobs haven't arrived yet shows its header and a
+//! placeholder row.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -28,6 +31,8 @@ pub enum RowKind {
     Added = 3,
     Removed = 4,
     Binary = 5,
+    /// Stands in for a file's diff until its blobs arrive.
+    Loading = 6,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -39,18 +44,100 @@ pub struct Row {
     pub new_line: u32,
 }
 
+/// A row relative to its file; the file index depends on the snapshot.
+#[derive(Clone, Copy, Debug)]
+struct FileRow {
+    kind: RowKind,
+    old_line: u32,
+    new_line: u32,
+}
+
+impl FileRow {
+    const fn new(kind: RowKind, old_line: u32, new_line: u32) -> Self {
+        Self {
+            kind,
+            old_line,
+            new_line,
+        }
+    }
+}
+
 pub struct FileEntry {
     pub path: String,
-    pub first_row: u32,
+    /// Blob ids; `None` on the side where the file doesn't exist.
+    pub old_id: Option<ObjectId>,
+    pub new_id: Option<ObjectId>,
     pub additions: u32,
     pub deletions: u32,
-    old: Arc<Text>,
-    new: Arc<Text>,
+    /// Whether the diff is in; until then the file is a header and a
+    /// [`RowKind::Loading`] row.
+    pub loaded: bool,
+    rows: Vec<FileRow>,
+    old: Text,
+    new: Text,
+}
+
+impl FileEntry {
+    /// A file whose blobs haven't been fetched yet.
+    pub fn pending(change: &Change) -> Self {
+        Self {
+            path: change.path.clone(),
+            old_id: change.old,
+            new_id: change.new,
+            additions: 0,
+            deletions: 0,
+            loaded: false,
+            rows: vec![
+                FileRow::new(RowKind::FileHeader, 0, 0),
+                FileRow::new(RowKind::Loading, 0, 0),
+            ],
+            old: Text::new(Vec::new()),
+            new: Text::new(Vec::new()),
+        }
+    }
+
+    /// Diffs a file whose blobs are in `store`.
+    pub fn load(store: &Store, change: &Change) -> Result<Self> {
+        let load = |id: Option<ObjectId>| -> Result<Text> {
+            Ok(Text::new(
+                id.map(|id| store.blob(&id))
+                    .transpose()?
+                    .unwrap_or_default(),
+            ))
+        };
+        let (old, new) = (load(change.old)?, load(change.new)?);
+        let mut rows = vec![FileRow::new(RowKind::FileHeader, 0, 0)];
+        let (mut additions, mut deletions) = (0, 0);
+        if old.binary || new.binary {
+            rows.push(FileRow::new(RowKind::Binary, 0, 0));
+        } else {
+            let input = InternedInput::new(old.lines(), new.lines());
+            let mut diff = Diff::compute(Algorithm::Histogram, &input);
+            diff.postprocess_lines(&input);
+            additions = diff.count_additions();
+            deletions = diff.count_removals();
+            let hunks: Vec<_> = diff.hunks().map(|h| (h.before, h.after)).collect();
+            push_hunks(&mut rows, &hunks, old.line_count(), new.line_count());
+        }
+        Ok(Self {
+            path: change.path.clone(),
+            old_id: change.old,
+            new_id: change.new,
+            additions,
+            deletions,
+            loaded: true,
+            rows,
+            old,
+            new,
+        })
+    }
 }
 
 pub struct Review {
-    pub files: Vec<FileEntry>,
-    pub rows: Vec<Row>,
+    /// Sorted by path.
+    pub files: Vec<Arc<FileEntry>>,
+    /// Each file's first row, then the total row count.
+    starts: Vec<u32>,
 }
 
 impl Review {
@@ -65,125 +152,56 @@ impl Review {
         }
         let mut changes = walk.changes;
         changes.sort_by(|a, b| a.path.cmp(&b.path));
-
-        let mut review = Review {
-            files: Vec::with_capacity(changes.len()),
-            rows: Vec::new(),
-        };
-        for change in changes {
-            review.push_file(store, change)?;
-        }
-        Ok(review)
+        let files = changes
+            .iter()
+            .map(|change| FileEntry::load(store, change).map(Arc::new))
+            .collect::<Result<_>>()?;
+        Ok(Self::from_files(files))
     }
 
-    fn push_file(&mut self, store: &Store, change: Change) -> Result<()> {
-        let load = |id: Option<ObjectId>| -> Result<Text> {
-            Ok(Text::new(
-                id.map(|id| store.blob(&id))
-                    .transpose()?
-                    .unwrap_or_default(),
-            ))
-        };
-        let (old, new) = (load(change.old)?, load(change.new)?);
-        let file = self.files.len() as u32;
-        let first_row = self.rows.len() as u32;
-        self.rows.push(Row {
-            kind: RowKind::FileHeader,
-            file,
-            old_line: 0,
-            new_line: 0,
-        });
-
-        let (mut additions, mut deletions) = (0, 0);
-        if old.binary || new.binary {
-            self.rows.push(Row {
-                kind: RowKind::Binary,
-                file,
-                old_line: 0,
-                new_line: 0,
-            });
-        } else {
-            let input = InternedInput::new(old.lines(), new.lines());
-            let mut diff = Diff::compute(Algorithm::Histogram, &input);
-            diff.postprocess_lines(&input);
-            additions = diff.count_additions();
-            deletions = diff.count_removals();
-            let hunks: Vec<_> = diff.hunks().map(|h| (h.before, h.after)).collect();
-            self.push_hunks(file, &hunks, old.line_count(), new.line_count());
+    /// Assembles a snapshot from files sorted by path.
+    pub fn from_files(files: Vec<Arc<FileEntry>>) -> Self {
+        let mut starts = Vec::with_capacity(files.len() + 1);
+        let mut total = 0u32;
+        for file in &files {
+            starts.push(total);
+            total += file.rows.len() as u32;
         }
-        self.files.push(FileEntry {
-            path: change.path,
-            first_row,
-            additions,
-            deletions,
-            old: Arc::new(old),
-            new: Arc::new(new),
-        });
-        Ok(())
+        starts.push(total);
+        Self { files, starts }
     }
 
-    /// Emits unified-diff rows, merging hunks whose context would overlap.
-    fn push_hunks(
-        &mut self,
-        file: u32,
-        hunks: &[(Range<u32>, Range<u32>)],
-        old_len: u32,
-        new_len: u32,
-    ) {
-        let mut i = 0;
-        while i < hunks.len() {
-            let mut j = i;
-            while j + 1 < hunks.len() && hunks[j + 1].0.start - hunks[j].0.end <= 2 * CONTEXT {
-                j += 1;
-            }
-            let old_start = hunks[i].0.start.saturating_sub(CONTEXT);
-            let new_start = hunks[i].1.start.saturating_sub(CONTEXT);
-            self.rows.push(Row {
-                kind: RowKind::Hunk,
-                file,
-                old_line: old_start + 1,
-                new_line: new_start + 1,
-            });
-            let (mut old_pos, mut new_pos) = (old_start, new_start);
-            for (before, after) in &hunks[i..=j] {
-                while old_pos < before.start {
-                    self.push_context(file, &mut old_pos, &mut new_pos);
-                }
-                for line in before.clone() {
-                    self.rows.push(Row {
-                        kind: RowKind::Removed,
-                        file,
-                        old_line: line + 1,
-                        new_line: 0,
-                    });
-                }
-                for line in after.clone() {
-                    self.rows.push(Row {
-                        kind: RowKind::Added,
-                        file,
-                        old_line: 0,
-                        new_line: line + 1,
-                    });
-                }
-                (old_pos, new_pos) = (before.end, after.end);
-            }
-            let old_end = (hunks[j].0.end + CONTEXT).min(old_len);
-            while old_pos < old_end && new_pos < new_len {
-                self.push_context(file, &mut old_pos, &mut new_pos);
-            }
-            i = j + 1;
-        }
+    pub fn row_count(&self) -> usize {
+        *self.starts.last().unwrap() as usize
     }
 
-    fn push_context(&mut self, file: u32, old_pos: &mut u32, new_pos: &mut u32) {
-        self.rows.push(Row {
-            kind: RowKind::Context,
-            file,
-            old_line: *old_pos + 1,
-            new_line: *new_pos + 1,
-        });
-        *old_pos += 1;
-        *new_pos += 1;
+    pub fn file_first_row(&self, file: usize) -> u32 {
+        self.starts[file]
+    }
+
+    pub fn file_index(&self, path: &str) -> Option<usize> {
+        self.files
+            .binary_search_by(|f| f.path.as_str().cmp(path))
+            .ok()
+    }
+
+    /// Rows in `range`, clamped to the review.
+    pub fn rows(&self, range: Range<usize>) -> impl Iterator<Item = Row> + '_ {
+        let end = range.end.min(self.row_count());
+        let start = range.start.min(end);
+        let mut file = self.starts.partition_point(|&s| s as usize <= start) - 1;
+        (start..end).map(move |i| {
+            while self.starts[file + 1] as usize <= i {
+                file += 1;
+            }
+            let row = self.files[file].rows[i - self.starts[file] as usize];
+            Row {
+                kind: row.kind,
+                file: file as u32,
+                old_line: row.old_line,
+                new_line: row.new_line,
+            }
+        })
     }
 
     /// Display text for a row: tabs expanded, line ending stripped, capped.
@@ -200,6 +218,10 @@ impl Review {
             }
             RowKind::Binary => {
                 out.extend_from_slice(b"Binary file not shown");
+                return;
+            }
+            RowKind::Loading => {
+                out.extend_from_slice(b"Loading\xe2\x80\xa6"); // …
                 return;
             }
             RowKind::Removed => file.old.line(row.old_line - 1),
@@ -223,6 +245,49 @@ impl Review {
             out.truncate(end);
         }
     }
+}
+
+/// Emits unified-diff rows, merging hunks whose context would overlap.
+fn push_hunks(
+    rows: &mut Vec<FileRow>,
+    hunks: &[(Range<u32>, Range<u32>)],
+    old_len: u32,
+    new_len: u32,
+) {
+    let mut i = 0;
+    while i < hunks.len() {
+        let mut j = i;
+        while j + 1 < hunks.len() && hunks[j + 1].0.start - hunks[j].0.end <= 2 * CONTEXT {
+            j += 1;
+        }
+        let old_start = hunks[i].0.start.saturating_sub(CONTEXT);
+        let new_start = hunks[i].1.start.saturating_sub(CONTEXT);
+        rows.push(FileRow::new(RowKind::Hunk, old_start + 1, new_start + 1));
+        let (mut old_pos, mut new_pos) = (old_start, new_start);
+        for (before, after) in &hunks[i..=j] {
+            while old_pos < before.start {
+                push_context(rows, &mut old_pos, &mut new_pos);
+            }
+            for line in before.clone() {
+                rows.push(FileRow::new(RowKind::Removed, line + 1, 0));
+            }
+            for line in after.clone() {
+                rows.push(FileRow::new(RowKind::Added, 0, line + 1));
+            }
+            (old_pos, new_pos) = (before.end, after.end);
+        }
+        let old_end = (hunks[j].0.end + CONTEXT).min(old_len);
+        while old_pos < old_end && new_pos < new_len {
+            push_context(rows, &mut old_pos, &mut new_pos);
+        }
+        i = j + 1;
+    }
+}
+
+fn push_context(rows: &mut Vec<FileRow>, old_pos: &mut u32, new_pos: &mut u32) {
+    rows.push(FileRow::new(RowKind::Context, *old_pos + 1, *new_pos + 1));
+    *old_pos += 1;
+    *new_pos += 1;
 }
 
 struct Text {
@@ -278,21 +343,14 @@ fn memchr_iter(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
 mod tests {
     use super::*;
 
-    fn kinds(review: &Review) -> Vec<RowKind> {
-        review.rows.iter().map(|r| r.kind).collect()
-    }
-
     #[test]
     fn merges_nearby_hunks_and_trims_context() {
-        let mut review = Review {
-            files: Vec::new(),
-            rows: Vec::new(),
-        };
+        let mut rows = Vec::new();
         // Changes at lines 2 and 5 of 20: one merged hunk, context capped at 3.
-        review.push_hunks(0, &[(1..2, 1..2), (4..5, 4..5)], 20, 20);
+        push_hunks(&mut rows, &[(1..2, 1..2), (4..5, 4..5)], 20, 20);
         use RowKind::*;
         assert_eq!(
-            kinds(&review),
+            rows.iter().map(|r| r.kind).collect::<Vec<_>>(),
             [
                 Hunk, Context, Removed, Added, Context, Context, Removed, Added, Context, Context,
                 Context

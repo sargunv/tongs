@@ -8,7 +8,10 @@ use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteBuffer, JClass, JString};
 use jni::sys::{jint, jlong};
+use std::sync::Arc;
 use tongs_engine::review::Review;
+
+mod fetch;
 use tongs_engine::store::Store;
 
 /// Fixed part of a row record: kind u8, 3 padding bytes, then file, old line,
@@ -17,7 +20,7 @@ const RECORD_HEADER: usize = 20;
 
 /// Engine errors, surfaced to Kotlin as `RuntimeException`s.
 #[derive(Debug)]
-struct Error(String);
+pub(crate) struct Error(String);
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -39,9 +42,16 @@ impl From<anyhow::Error> for Error {
     }
 }
 
-fn review<'a>(handle: jlong) -> &'a Review {
-    // Safety: handles come from `openReview` and stay valid until `closeReview`.
-    unsafe { &*(handle as *const Review) }
+/// Review handles are boxed `Arc`s, so fetch sessions can share files between
+/// the snapshots they hand out.
+pub(crate) fn review<'a>(handle: jlong) -> &'a Review {
+    // Safety: handles come from `openReview` or `takeSnapshot` and stay valid
+    // until `closeReview`.
+    unsafe { &*(handle as *const Arc<Review>) }
+}
+
+pub(crate) fn review_handle(review: Review) -> jlong {
+    Box::into_raw(Box::new(Arc::new(review))) as jlong
 }
 
 #[unsafe(no_mangle)]
@@ -62,7 +72,7 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_openReview<'lo
             let store = Store::open(store_dir)?;
             Review::open(&store, &old_commit.parse()?, &new_commit.parse()?)
         };
-        Ok(Box::into_raw(Box::new(open()?)) as jlong)
+        Ok(review_handle(open()?))
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }
@@ -75,7 +85,7 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_closeReview<'l
 ) {
     if handle != 0 {
         // Safety: see `review`; the Kotlin side forgets the handle after this.
-        drop(unsafe { Box::from_raw(handle as *mut Review) });
+        drop(unsafe { Box::from_raw(handle as *mut Arc<Review>) });
     }
 }
 
@@ -85,7 +95,7 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_rowCount<'loca
     _class: JClass<'local>,
     handle: jlong,
 ) -> jint {
-    review(handle).rows.len() as jint
+    review(handle).row_count() as jint
 }
 
 #[unsafe(no_mangle)]
@@ -104,7 +114,7 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_fileFirstRow<'
     handle: jlong,
     file: jint,
 ) -> jint {
-    review(handle).files[file as usize].first_row as jint
+    review(handle).file_first_row(file as usize) as jint
 }
 
 #[unsafe(no_mangle)]
@@ -147,12 +157,11 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_fillRows<'loca
 }
 
 fn fill_rows(review: &Review, first: usize, count: usize, out: &mut [u8]) -> jint {
-    let end = (first + count).min(review.rows.len());
     let (mut pos, mut written) = (0, 0);
     let mut text = Vec::new();
-    for row in review.rows.get(first..end).unwrap_or_default() {
+    for row in review.rows(first..first + count) {
         text.clear();
-        review.row_text(row, &mut text);
+        review.row_text(&row, &mut text);
         let len = RECORD_HEADER + text.len();
         if pos + len > out.len() {
             break;

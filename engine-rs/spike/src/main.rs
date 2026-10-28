@@ -58,7 +58,12 @@ impl Client {
         filter: Option<Filter>,
     ) -> Result<(u32, u64)> {
         let url = format!("https://github.com/{}.git/git-upload-pack", self.repo);
-        let body = FetchRequest { wants, filter }.body();
+        let body = FetchRequest {
+            wants,
+            filter,
+            deepen: None,
+        }
+        .body();
         let mut request = self
             .agent
             .post(&url)

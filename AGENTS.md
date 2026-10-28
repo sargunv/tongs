@@ -142,8 +142,8 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   teams share one adb server, and `installDebug` installs on every device
 - `./gradlew :feature:inbox:verifyRoborazziJvm`: compare the inbox against its
   screenshots in `feature/inbox/src/jvmTest/snapshots` (rows, views, filters,
-  grouping, snoozed, and each sync problem, from made-up data);
-  `recordRoborazziJvm` updates them
+  grouping, snoozed, read elsewhere with its bulk action, and each sync problem,
+  from made-up data); `recordRoborazziJvm` updates them
 - `TONGS_LIVE_TESTS=1 GH_TOKEN=$(gh auth token) ./gradlew :forge:github:jvmTest --tests '*LiveInbox*' -i`:
   poll and hydrate your real inbox, read-only, and print each row and the
   GraphQL points it cost

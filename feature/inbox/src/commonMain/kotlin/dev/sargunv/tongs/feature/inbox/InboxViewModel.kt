@@ -196,10 +196,22 @@ class InboxViewModel(
     }
   }
 
+  /**
+   * Marks a row read, as opening it does. A row read elsewhere is read already; this clears its
+   * mark instead.
+   */
   fun markRead(row: InboxRow) {
-    if (!row.isUnread) return
-    viewModelScope.launch { inbox.markRead(row.key) }
+    when {
+      row.isUnread -> viewModelScope.launch { inbox.markRead(row.key) }
+      row.readElsewhere -> viewModelScope.launch { inbox.acknowledgeReadElsewhere(row.key) }
+    }
   }
+
+  /**
+   * Marks done the rows in [rows] that were read or done elsewhere, which GitHub can't tell apart.
+   * Sending done for one that's already done there is harmless.
+   */
+  fun markReadElsewhereDone(rows: List<InboxRow>) = markAllDone(rows.filter { it.readElsewhere })
 
   fun toggleRead(row: InboxRow) {
     viewModelScope.launch {

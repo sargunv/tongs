@@ -75,6 +75,9 @@ interface InboxActions {
 
   fun markAllDone(rows: List<InboxRow>) {}
 
+  /** Marks done those of [rows] that were read or done elsewhere. */
+  fun markReadElsewhereDone(rows: List<InboxRow>) {}
+
   fun toggleRead(row: InboxRow) {}
 
   fun markRead(row: InboxRow) {}
@@ -137,6 +140,9 @@ fun InboxScreen(
         override fun markDone(row: InboxRow) = viewModel.markDone(row)
 
         override fun markAllDone(rows: List<InboxRow>) = viewModel.markAllDone(rows)
+
+        override fun markReadElsewhereDone(rows: List<InboxRow>) =
+          viewModel.markReadElsewhereDone(rows)
 
         override fun toggleRead(row: InboxRow) = viewModel.toggleRead(row)
 
@@ -227,6 +233,7 @@ fun InboxContent(
             state = state,
             onGroup = actions::toggleGroupByRepo,
             onMarkAllDone = { rows?.let(actions::markAllDone) },
+            onMarkReadElsewhereDone = { rows?.let(actions::markReadElsewhereDone) },
             onEditView = { editingView = true },
             onShortcuts = { showShortcuts = true },
           )
@@ -372,6 +379,7 @@ private fun OverflowMenu(
   state: InboxUiState,
   onGroup: () -> Unit,
   onMarkAllDone: () -> Unit,
+  onMarkReadElsewhereDone: () -> Unit,
   onEditView: () -> Unit,
   onShortcuts: () -> Unit,
 ) {
@@ -389,6 +397,20 @@ private fun OverflowMenu(
           onMarkAllDone()
         },
       )
+      // Threads GitHub stopped listing as unread without Tongs reading them stay until they're
+      // done here, since GitHub can't say whether they were read or done; this clears them at once.
+      val elsewhere =
+        if (state.query.wantsSnoozed) 0 else state.rows.orEmpty().count { it.readElsewhere }
+      if (elsewhere > 0) {
+        DropdownMenuItem(
+          text = { Text("Mark done: read elsewhere ($elsewhere)") },
+          leadingIcon = { Icon(TongsIcons.Done, null) },
+          onClick = {
+            open = false
+            onMarkReadElsewhereDone()
+          },
+        )
+      }
       DropdownMenuItem(
         text = { Text("Group by repo") },
         leadingIcon = { Icon(TongsIcons.Folder, null) },

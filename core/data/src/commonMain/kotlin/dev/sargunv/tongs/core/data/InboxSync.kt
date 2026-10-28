@@ -105,7 +105,7 @@ class InboxSync(
   /**
    * Polls one account once and stores the result, then hydrates what changed. Usually the poll is
    * conditional on the cursor, so it asks only for what changed since; [full] asks for the whole
-   * inbox instead, which is how threads marked done elsewhere are noticed. The first poll of a
+   * inbox instead, which is how threads read or done elsewhere are noticed. The first poll of a
    * session is full, then one every [FULL_POLL_INTERVAL], and every refresh.
    */
   suspend fun poll(accountId: Long, full: Boolean = false) = lock.withLock {
@@ -180,9 +180,9 @@ class InboxSync(
 
   /**
    * Writes the forge's view of each unread thread, keeping local state, then settles the stored
-   * threads the poll covers but doesn't list: they aren't unread on the forge anymore. Those
-   * triaged here stay, read, until they're done here; the rest were read or done elsewhere, which
-   * GitHub doesn't tell apart, and go.
+   * threads the poll covers but doesn't list: they aren't unread on the forge anymore. Every thread
+   * stays until it's done here; those that stopped being unread without Tongs reading them are
+   * marked read elsewhere.
    */
   private suspend fun merge(accountId: Long, poll: InboxPoll.Changed) {
     val existing = dao.threads(accountId).associateBy { it.id }
@@ -197,9 +197,18 @@ class InboxSync(
           it.repoOwner.lowercase() !in hiddenOrgs &&
           (poll.complete || (coveredFrom != null && it.updatedAt >= coveredFrom))
       }
-    val (stay, gone) = missing.partition { it.kept || it.pendingDone || it.pendingRead }
-    if (gone.isNotEmpty()) dao.delete(accountId, gone.map { it.id })
-    val nowRead = stay.filter { it.unread }
+    // Tongs keeps its own inbox: a thread joins when the forge says it's unread, and leaves only
+    // when it's marked done here. A missing thread is never deleted, because GitHub can't say
+    // whether it was read or done elsewhere. `DELETE /notifications/threads/{id}` sets done, but
+    // nothing reads it back: with `all=true`, done threads come back as plain read ones
+    // (`unread: false`), a single thread's GET has no done field, and GraphQL's
+    // `notificationThreads`, which GitHub's own apps use, isn't public. Reported, unanswered:
+    // https://github.com/orgs/community/discussions/152852. So polls ask for unread only (see
+    // `GitHubNotifications`), and a thread that stops being unread without Tongs reading it stays,
+    // read, and is marked read elsewhere: dropping it would also drop threads that were only read,
+    // which are still in the user's inbox on GitHub. A thread read here is already read (`unread`
+    // is false while its read is pending), so it isn't marked.
+    val nowRead = missing.filter { it.unread }
     if (nowRead.isNotEmpty()) dao.markReadElsewhere(accountId, nowRead.map { it.id })
   }
 
@@ -277,7 +286,8 @@ internal fun InboxThread.toEntity(accountId: Long, old: InboxThreadEntity?): Inb
     pendingDone = old?.pendingDone ?: false,
     localUnread = old?.localUnread ?: false,
     snoozedUntil = old?.snoozedUntil,
-    kept = old?.kept ?: false,
+    // Unread again means new activity, which clears the mark.
+    readElsewhere = !unread && old?.readElsewhere == true,
     // Hydration describes the thread as of an update. The state is still the best guess after a
     // newer one, but what's new isn't until hydration says again.
     subjectState = old?.subjectState,

@@ -94,6 +94,7 @@ private val SUGGESTIONS =
     "Merged" to "is:merged",
     "Closed" to "is:closed",
     "Snoozed" to "is:snoozed",
+    READ_ELSEWHERE to "is:${InboxQuery.READ_ELSEWHERE}",
   )
 
 /**

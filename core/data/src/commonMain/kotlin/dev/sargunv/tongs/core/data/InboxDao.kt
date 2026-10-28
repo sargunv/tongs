@@ -60,11 +60,11 @@ data class InboxThreadEntity(
   /** Hidden until this time, then shown again as unread. */
   val snoozedUntil: Long? = null,
   /**
-   * Triaged here (read, marked unread, or snoozed), so it stays in the inbox until it's done here,
-   * whether or not the forge still lists it as unread. Threads that weren't stop being listed once
-   * read or done elsewhere, and go.
+   * The forge stopped listing it as unread without Tongs reading it: it was read or marked done
+   * elsewhere, which GitHub doesn't tell apart. It stays, read, until it's done here; new activity
+   * or reading it here clears this. See `InboxSync.merge`.
    */
-  @ColumnInfo(defaultValue = "0") val kept: Boolean = false,
+  @ColumnInfo(defaultValue = "0") val readElsewhere: Boolean = false,
 
   // Hydration; see InboxHydrator. Raw values from the forge.
 
@@ -139,6 +139,11 @@ data class InboxRow(
   /** When it comes back, if it's snoozed; a past time if it already has. */
   val snoozedUntil: Long?,
   /**
+   * Read, and the forge stopped listing it as unread without Tongs reading it: read or done
+   * elsewhere. False while it shows as unread here.
+   */
+  val readElsewhere: Boolean = false,
+  /**
    * The start of an unsent reply drafted on this thread, shown on its row like an email draft: the
    * most recent of its [DraftEntity]s, in any slot.
    */
@@ -152,6 +157,7 @@ private const val ROW_COLUMNS =
   t.subjectNumber, t.webUrl, t.reason, (t.unread OR t.localUnread) AS isUnread, t.updatedAt,
   MAX(t.updatedAt, COALESCE(t.snoozedUntil, 0)) AS sortAt, t.subjectState, t.whatsNew,
   t.stateReason, t.isDraft, t.checks, t.reviewDecision, t.snoozedUntil,
+  (t.readElsewhere AND NOT (t.unread OR t.localUnread)) AS readElsewhere,
   (SELECT substr(d.body, 1, 200) FROM draft d
     WHERE d.accountId = t.accountId AND d.repoOwner = t.repoOwner AND d.repoName = t.repoName
       AND d.number = t.subjectNumber
@@ -214,14 +220,20 @@ interface InboxDao {
   @Query("DELETE FROM inbox_thread WHERE accountId = :accountId AND id IN (:ids)")
   suspend fun delete(accountId: Long, ids: List<String>)
 
-  /** The forge no longer lists these as unread; they stay, read. */
-  @Query("UPDATE inbox_thread SET unread = 0 WHERE accountId = :accountId AND id IN (:ids)")
+  /** The forge no longer lists these as unread, and Tongs didn't read them; they stay, read. */
+  @Query(
+    "UPDATE inbox_thread SET unread = 0, readElsewhere = 1 WHERE accountId = :accountId AND id IN (:ids)",
+  )
   suspend fun markReadElsewhere(accountId: Long, ids: List<String>)
+
+  /** Seen here, so no longer marked read elsewhere. Local: the forge already has it read. */
+  @Query("UPDATE inbox_thread SET readElsewhere = 0 WHERE accountId = :accountId AND id = :id")
+  suspend fun clearReadElsewhere(accountId: Long, id: String)
 
   @Query(
     """
     UPDATE inbox_thread
-    SET unread = 0, localUnread = 0, snoozedUntil = NULL, pendingRead = 1, kept = 1
+    SET unread = 0, localUnread = 0, snoozedUntil = NULL, pendingRead = 1, readElsewhere = 0
     WHERE accountId = :accountId AND id = :id
     """,
   )
@@ -236,7 +248,7 @@ interface InboxDao {
   suspend fun revertRead(accountId: Long, id: String)
 
   @Query(
-    "UPDATE inbox_thread SET localUnread = 1, kept = 1 WHERE accountId = :accountId AND id = :id",
+    "UPDATE inbox_thread SET localUnread = 1 WHERE accountId = :accountId AND id = :id",
   )
   suspend fun markUnreadLocally(accountId: Long, id: String)
 
@@ -250,7 +262,7 @@ interface InboxDao {
 
   @Query(
     """
-    UPDATE inbox_thread SET snoozedUntil = :until, localUnread = 1, kept = 1
+    UPDATE inbox_thread SET snoozedUntil = :until, localUnread = 1
     WHERE accountId = :accountId AND id = :id
     """,
   )

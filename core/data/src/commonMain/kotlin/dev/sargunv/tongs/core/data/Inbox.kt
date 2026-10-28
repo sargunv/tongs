@@ -116,6 +116,13 @@ class InboxRepository(
   }
 
   /**
+   * Clears a read thread's read-elsewhere mark once it's been seen here, as opening it does. Local:
+   * the forge already has it read, or done.
+   */
+  suspend fun acknowledgeReadElsewhere(key: ThreadKey) =
+    dao.clearReadElsewhere(key.accountId, key.threadId)
+
+  /**
    * Hides [keys] at once and marks them done on the forge after [window], unless [Undo.undo] comes
    * first.
    */

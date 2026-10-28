@@ -118,6 +118,9 @@ class InboxHydrationSyncTest {
       )
     sync.poll(account)
     assertEquals(setOf("1", "2"), dao.threads(account).map { it.id }.toSet())
+    // Hidden isn't missing: it's still unread, and not marked read elsewhere.
+    assertEquals(true, dao.thread(account, "2")!!.unread)
+    assertEquals(false, dao.thread(account, "2")!!.readElsewhere)
     val status = InboxRepository(db, clients, backgroundScope, virtualClock()).syncStatus().first()
     assertEquals(listOf("octo-org"), status.single().ssoHidden.map { it.organization })
   }

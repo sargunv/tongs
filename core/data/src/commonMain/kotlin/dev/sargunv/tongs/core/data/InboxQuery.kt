@@ -7,6 +7,7 @@ import dev.sargunv.tongs.forge.api.SubjectType
  * - `reason:review-requested` (or `review_requested`): GitHub's reason, raw
  * - `is:pr`, `is:issue`, `is:release`, `is:discussion`, `is:commit`, `is:check-suite`: the subject
  * - `is:unread`, `is:read`
+ * - `is:read-elsewhere`: read or done elsewhere, which GitHub doesn't tell apart (Tongs' own)
  * - `is:open`, `is:closed`, `is:merged`, `is:draft`: the subject's state, once hydrated
  * - `is:snoozed`: threads snoozed for later, which the inbox otherwise hides
  * - `repo:owner/name` (or just `name`), `org:owner`
@@ -28,6 +29,7 @@ data class InboxQuery(
     Reason,
     Type,
     Read,
+    ReadElsewhere,
     State,
     Snoozed,
     Repo,
@@ -63,6 +65,7 @@ data class InboxQuery(
           row.subjectType == value
         }
       Kind.Read -> row.isUnread == (value == "unread")
+      Kind.ReadElsewhere -> row.readElsewhere
       Kind.State ->
         when (value) {
           "draft" -> row.isDraft && row.subjectState == "OPEN"
@@ -91,6 +94,9 @@ data class InboxQuery(
 
   companion object {
     private const val ISSUE_OR_PR = "issue-or-pull-request"
+
+    /** The term for threads read or done elsewhere, which "Mark done: read elsewhere" clears. */
+    const val READ_ELSEWHERE = "read-elsewhere"
 
     val Empty = parse("")
 
@@ -143,6 +149,7 @@ data class InboxQuery(
             ISSUE_OR_PR -> Kind.Type to ISSUE_OR_PR
             "unread",
             "read" -> Kind.Read to value
+            READ_ELSEWHERE -> Kind.ReadElsewhere to value
             "open",
             "closed",
             "merged",

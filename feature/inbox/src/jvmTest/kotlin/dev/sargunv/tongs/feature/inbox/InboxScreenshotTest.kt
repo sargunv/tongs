@@ -1,7 +1,10 @@
 package dev.sargunv.tongs.feature.inbox
 
 import androidx.compose.ui.test.ExperimentalTestApi
-import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.onLast
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runDesktopComposeUiTest
 import dev.sargunv.tongs.core.data.AccountSyncStatus
 import dev.sargunv.tongs.core.data.InboxQuery
@@ -41,6 +44,7 @@ class InboxScreenshotTest {
     repo: String = "hello-world",
     snoozedFor: Duration? = null,
     replyDraft: String? = null,
+    readElsewhere: Boolean = false,
   ) =
     InboxRow(
       accountId = 1,
@@ -64,6 +68,7 @@ class InboxScreenshotTest {
       reviewDecision = review,
       snoozedUntil = snoozedFor?.let { (now + it).toEpochMilliseconds() },
       draft = replyDraft,
+      readElsewhere = readElsewhere,
     )
 
   private val rows =
@@ -145,6 +150,7 @@ class InboxScreenshotTest {
     width: Int = 480,
     height: Int = 640,
     filterOpen: Boolean = false,
+    menuOpen: Boolean = false,
   ) =
     runDesktopComposeUiTest(width = width, height = height) {
       setContent {
@@ -158,7 +164,8 @@ class InboxScreenshotTest {
           )
         }
       }
-      onRoot().captureRoboImage("src/jvmTest/snapshots/$name.png")
+      if (menuOpen) onNodeWithContentDescription("More").performClick()
+      onAllNodes(isRoot()).onLast().captureRoboImage("src/jvmTest/snapshots/$name.png")
     }
 
   private val synced =
@@ -186,6 +193,17 @@ class InboxScreenshotTest {
     )
 
   @Test fun inbox() = capture("inbox", state)
+
+  /** Read or done elsewhere: GitHub stopped listing them as unread, and Tongs didn't read them. */
+  private val readElsewhere = rows.mapIndexed { i, row ->
+    if (i in setOf(3, 4, 6)) row.copy(readElsewhere = true) else row
+  }
+
+  @Test fun readElsewhere() = capture("inbox-read-elsewhere", state.copy(rows = readElsewhere))
+
+  @Test
+  fun readElsewhereMenu() =
+    capture("inbox-read-elsewhere-menu", state.copy(rows = readElsewhere), menuOpen = true)
 
   @Test fun inboxDark() = capture("inbox-dark", state, dark = true)
 

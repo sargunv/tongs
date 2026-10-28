@@ -20,14 +20,27 @@ import kotlinx.coroutines.delay
 import org.jetbrains.skia.EncodedImageFormat
 
 /**
- * Spike: opens a review from a pre-filled object store (see `tongs-spike`) and renders it.
- *
- * Usage: `[storeDir oldCommit newCommit] [--bench] [--screenshot=out.png@row] [--no-highlight]`.
- * Defaults to maplibre/maplibre-native-ffi#760. Or `--pr owner/repo#number [--store=dir]
- * [--exit-when-loaded] [--jump=fraction] [--no-highlight]` to fetch a PR in-app; see
- * [runPullRequest].
+ * Runs the app; see [runApp]. The spike modes are still here, behind flags:
+ * - `--spike [storeDir oldCommit newCommit] [--bench] [--screenshot=out.png@row] [--no-highlight]`
+ *   opens a review from a pre-filled object store (see `tongs-spike`) and renders it. Defaults to
+ *   maplibre/maplibre-native-ffi#760. `--bench` and `--screenshot` imply `--spike`.
+ * - `--pr owner/repo#number [--store=dir] [--exit-when-loaded] [--jump=fraction] [--no-highlight]`
+ *   fetches a PR in-app without an account; see [runPullRequest].
+ * - `--app-screenshots=dir` renders the app's main screens offscreen; see [renderAppScreenshots].
  */
 fun main(args: Array<String>) {
+  val spike =
+    "--spike" in args ||
+      "--bench" in args ||
+      "--pr" in args ||
+      args.any { it.startsWith("--screenshot=") }
+  if (!spike) {
+    val shots = args.firstNotNullOfOrNull {
+      it.removePrefix("--app-screenshots=").takeIf { s -> s != it }
+    }
+    if (shots != null) renderAppScreenshots(File(shots)) else runApp()
+    return
+  }
   val highlighter = if ("--no-highlight" in args) null else Highlighter()
   val pr = args.indexOf("--pr").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
   if (pr != null) {

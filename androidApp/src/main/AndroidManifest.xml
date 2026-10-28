@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET" />
+  <!-- No backup: the database is a cache of the forge, and tokens can't be decrypted elsewhere. -->
   <application
+    android:name=".TongsApplication"
+    android:allowBackup="false"
     android:label="Tongs"
-    android:theme="@android:style/Theme.Material.NoActionBar">
+    android:theme="@style/Theme.Tongs">
     <profileable android:shell="true" />
-    <!-- Compose handles size and density changes, so resizing a window doesn't restart a load. -->
+    <!-- Compose handles size and density changes, so folding doesn't restart the activity. -->
     <activity
       android:name=".MainActivity"
       android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|uiMode"
@@ -14,6 +17,13 @@
         <action android:name="android.intent.action.MAIN" />
         <category android:name="android.intent.category.LAUNCHER" />
       </intent-filter>
+    </activity>
+    <!-- Spike: opens a PR without an account, for timing runs; see AGENTS.md. -->
+    <activity
+      android:name=".PullRequestActivity"
+      android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|uiMode"
+      android:exported="true"
+      android:theme="@android:style/Theme.Material.NoActionBar">
       <intent-filter>
         <action android:name="android.intent.action.VIEW" />
         <category android:name="android.intent.category.DEFAULT" />

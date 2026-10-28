@@ -1,38 +1,33 @@
-import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
-import org.jetbrains.kotlin.gradle.plugin.KotlinPlatformType
-
 plugins {
-  alias(libs.plugins.kotlin.multiplatform)
+  alias(libs.plugins.tongs.kmp.library)
   alias(libs.plugins.kotlin.serialization)
-  alias(libs.plugins.android.kotlin.multiplatform.library)
+  alias(libs.plugins.apollo)
+  alias(libs.plugins.metro)
 }
 
 kotlin {
-  jvmToolchain(25)
-  jvm()
-  android {
-    namespace = "dev.sargunv.tongs.forge.github"
-    compileSdk = libs.versions.android.compileSdk.get().toInt()
-    minSdk = libs.versions.android.minSdk.get().toInt()
-  }
-
-  // The OkHttp engine, shared by desktop and Android; see the engine module.
-  @OptIn(ExperimentalKotlinGradlePluginApi::class)
-  applyDefaultHierarchyTemplate {
-    common {
-      group("jvmAndAndroid") {
-        withJvm()
-        withCompilations { it.platformType == KotlinPlatformType.androidJvm }
-      }
-    }
-  }
-
   sourceSets {
     commonMain.dependencies {
       api(project(":engine"))
+      api(project(":forge:api"))
+      api(project(":core:net"))
       api(libs.ktor.client.core)
+      implementation(libs.apollo.runtime)
       implementation(libs.kotlinx.serialization.json)
     }
-    named("jvmAndAndroidMain").dependencies { implementation(libs.ktor.client.okhttp) }
+    commonTest.dependencies { implementation(libs.ktor.client.mock) }
+  }
+}
+
+apollo {
+  service("github") {
+    packageName = "dev.sargunv.tongs.forge.github.graphql"
+    // GitHub's public schema, from https://docs.github.com/public/fpt/schema.docs.graphql.
+    schemaFiles.from(file("src/commonMain/graphql/schema.graphqls"))
+    srcDir("src/commonMain/graphql")
+    mapScalar("DateTime", "kotlin.String")
+    mapScalar("URI", "kotlin.String")
+    mapScalar("HTML", "kotlin.String")
+    mapScalar("GitObjectID", "kotlin.String")
   }
 }

@@ -12,6 +12,7 @@ dependencies {
   implementation(project(":engine"))
   implementation(project(":codeview"))
   implementation(project(":feature:review"))
+  implementation(project(":app"))
   implementation(compose.desktop.currentOs)
   implementation(libs.kotlinx.coroutines.swing)
 }

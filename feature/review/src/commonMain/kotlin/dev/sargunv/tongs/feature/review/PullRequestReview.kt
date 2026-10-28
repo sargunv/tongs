@@ -37,21 +37,37 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
- * Fetches a GitHub PR's review in the background, for [PullRequestReview] to show as it loads.
- * [start] it before the UI exists: creating a window or activity takes about as long as the PR
- * metadata call.
+ * Fetches a PR's review in the background, for [PullRequestReview] to show as it loads. [start] it
+ * before the UI exists: creating a window or activity takes about as long as the PR metadata call.
  *
+ * @param title what's loading, like `owner/repo#N`, for status lines.
  * @param log timing and progress lines, from any thread.
- * @param openSession opens a fetch session over the repo's object store.
+ * @param fetch loads the review, passing its [ReviewLoader] on as soon as it exists; usually a
+ *   forge's [dev.sargunv.tongs.forge.api.ReviewSource].
  */
 class PullRequestLoad(
-  private val github: GitHub,
-  val ref: PullRequestRef,
+  val title: String,
   internal val log: (String) -> Unit = {},
-  private val openSession: (FetchOptions) -> FetchSession,
+  private val fetch: suspend (onLoader: (ReviewLoader) -> Unit) -> Unit,
 ) {
+  /**
+   * Loads [ref] from [github] directly, without an account: the spike entry points use this.
+   *
+   * @param openSession opens a fetch session over the repo's object store.
+   */
+  constructor(
+    github: GitHub,
+    ref: PullRequestRef,
+    log: (String) -> Unit = {},
+    openSession: (FetchOptions) -> FetchSession,
+  ) : this(
+    ref.toString(),
+    log,
+    { onLoader -> loadPullRequestReview(github, ref, openSession, onLoader, log) },
+  )
+
   internal val loader = MutableStateFlow<ReviewLoader?>(null)
-  internal val status = MutableStateFlow("Loading $ref…")
+  internal val status = MutableStateFlow("Loading $title…")
   internal var job: Job? = null
 
   /** The view of the latest snapshot, once the first one is on screen. */
@@ -67,15 +83,9 @@ class PullRequestLoad(
     scope
       .launch(Dispatchers.Default) {
         try {
-          loadPullRequestReview(
-            github,
-            ref,
-            openSession = openSession,
-            onLoader = { loader.value = it },
-            log = log,
-          )
+          fetch { loader.value = it }
         } catch (e: Exception) {
-          status.value = "Failed to load $ref: ${e.message}"
+          status.value = "Failed to load $title: ${e.message}"
           log(status.value)
           e.printStackTrace()
         } finally {

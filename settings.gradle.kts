@@ -1,6 +1,7 @@
 rootProject.name = "tongs"
 
 pluginManagement {
+  includeBuild("build-logic")
   repositories {
     google()
     mavenCentral()
@@ -18,8 +19,19 @@ dependencyResolutionManagement {
 include(
   ":engine",
   ":codeview",
+  ":core:net",
+  ":core:data",
+  ":core:navigation",
+  ":core:ui",
+  ":forge:api",
   ":forge:github",
+  ":feature:auth",
+  ":feature:feed",
+  ":feature:inbox",
   ":feature:review",
+  ":feature:settings",
+  ":feature:thread",
+  ":app",
   ":desktopApp",
   ":androidApp",
 )

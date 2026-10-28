@@ -31,6 +31,7 @@ android {
 }
 
 dependencies {
+  implementation(project(":app"))
   implementation(project(":feature:review"))
   implementation(libs.androidx.activity.compose)
   implementation(libs.compose.foundation)

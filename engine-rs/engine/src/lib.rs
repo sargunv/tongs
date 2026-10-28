@@ -1,0 +1,6 @@
+//! Tongs code engine: git object fetch and storage, tree and file diffs.
+
+pub mod file_diff;
+pub mod protocol;
+pub mod store;
+pub mod tree_walk;

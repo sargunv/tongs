@@ -1,0 +1,23 @@
+[settings]
+experimental = true
+pin = true
+lockfile = true
+
+[tools]
+"aqua:dprint/dprint" = "0.64.3"
+"aqua:jdx/jactionlint" = "2.3.0"
+"github:jdx/hk" = "2.9.0"
+"core:java" = "zulu-25.38.107.0"
+"core:rust" = { version = "1.99.1", profile = "minimal", components = "rustfmt,clippy" }
+
+[env]
+ANDROID_HOME = "{{env.HOME}}/Android/Sdk"
+
+[tasks.check]
+run = "hk check --all"
+
+[tasks.fix]
+run = "hk fix --all"
+
+[hooks]
+postinstall = ["hk install --mise"]

@@ -1,0 +1,12 @@
+# Rust
+/target/
+
+# Gradle and Kotlin
+.gradle/
+build/
+.kotlin/
+local.properties
+
+# IDEs
+.idea/
+*.iml

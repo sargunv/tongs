@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["engine-rs/*"]
+
+[workspace.package]
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[profile.release]
+debug = "line-tables-only"

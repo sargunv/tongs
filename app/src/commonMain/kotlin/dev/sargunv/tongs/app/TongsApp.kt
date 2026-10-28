@@ -32,6 +32,7 @@ import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
 import androidx.savedstate.serialization.SavedStateConfiguration
+import coil3.compose.setSingletonImageLoaderFactory
 import dev.sargunv.tongs.core.data.InboxSync
 import dev.sargunv.tongs.core.navigation.LocalNavigator
 import dev.sargunv.tongs.core.navigation.Navigator
@@ -50,6 +51,9 @@ import dev.sargunv.tongs.core.ui.isCompactWidth
  */
 @Composable
 fun TongsApp(graph: AppGraph, initialBackStack: List<Route>? = null) {
+  setSingletonImageLoaderFactory {
+    tongsImageLoader(it, graph.httpClient, graph.environment.cacheDir)
+  }
   TongsTheme {
     Surface(Modifier.fillMaxSize()) {
       val accounts by graph.accounts.accounts.collectAsState(initial = null)

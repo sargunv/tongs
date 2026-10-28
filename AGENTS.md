@@ -30,31 +30,49 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   (`ForgeException`), what's new on a thread (`SubjectActivity`,
   `summarizeWhatsNew`), and the ports each forge adapter implements:
   `ForgeAdapter` (registered in a map by `ForgeKind`), `AuthProvider` with the
-  OAuth device flow, `InboxSource`, `InboxHydrator`, and `ReviewSource`
+  OAuth device flow, `InboxSource`, `InboxHydrator`, `ReviewSource`, and
+  `ThreadSource` with the conversation model in `Thread.kt` (`ThreadDetail`,
+  typed `TimelineItem`s, `ReviewThread`, and open enums that serialize as their
+  raw value)
 - `forge/github`: the GitHub adapter: notifications REST (unread only; see
   `docs/design.md`), inbox hydration (`GitHubHydrator`, which batches
   `InboxHydration.graphql` under aliases), error mapping (`GitHubErrors.kt`:
   rate limits, scopes, SAML SSO), token checks through Apollo GraphQL
-  (`src/commonMain/graphql`, with GitHub's public schema), the device flow, and
-  git smart HTTP and `loadPullRequestReview` for reviews
+  (`src/commonMain/graphql`, with GitHub's public schema), the device flow,
+  issue and PR threads (`GitHubThreads`, from `Thread.graphql`, whose operations
+  and fragments all start with `Thread`), and git smart HTTP and
+  `loadPullRequestReview` for reviews
 - `core/net`: the shared Ktor client (OkHttp on both platforms) and conditional
   request, poll interval, `Link`, and rate limit helpers
 - `core/data`: Room 3 (`TongsDatabase`, schemas in `core/data/schemas`), the
   inbox sync (`InboxSync`, with hydration and typed sync status), triage with
   undo (`InboxRepository`), filters in GitHub's vocabulary (`InboxQuery`), saved
-  views (`InboxViewRepository`), accounts and per-account forge clients,
-  settings in DataStore, and `TokenStore` implementations (Android Keystore;
-  desktop OS keychain with a private-file fallback)
+  views (`InboxViewRepository`), threads cached as JSON documents with
+  optimistic comments, reactions, and state changes (`ThreadRepository`), drafts
+  for every composer (`DraftRepository`, keyed by `DraftKey`), accounts and
+  per-account forge clients, settings in DataStore, and `TokenStore`
+  implementations (Android Keystore; desktop OS keychain with a private-file
+  fallback)
 - `core/ui`: the design system: `TongsTheme` (Material 3 Expressive), density
   per platform, `TongsIcons` (Material Symbols), `ListRow`, `SwipeActionsBox`,
   `stateColors()` (open, merged, closed, and checks, harmonized with the theme),
-  `TongsTopAppBar`, and `TongsNavigationSuite`
-- `core/navigation`: the sealed `Route` hierarchy, `Navigator`, and
-  `RouteEntries`, the seam through which each feature adds its screens
-- `feature/*`: screens, each with its own `RouteEntries`: `inbox`, `thread`
-  (placeholder), `review` (PR changes; `PullRequestLoad` fetches a PR in the
-  background and `PullRequestReview` shows it as it loads), `auth` (sign-in),
-  `settings`, and `feed` (Activity, placeholder)
+  `ConversationIcons`, `Avatar` (Coil), `TongsTopAppBar`, and
+  `TongsNavigationSuite`
+- `core/markdown`: `ForgeMarkdown` (mikepenz's renderer, with references linked
+  by `linkifyReferences`, common GitHub HTML converted, Coil images, and code
+  fences highlighted by the engine), and `ProvideForgeLinks`, which opens issue
+  and PR links in the app
+- `core/composer`: the reusable Markdown `Composer` (toolbar, preview, actions)
+  and `rememberComposerState`, which autosaves to a `DraftKey`
+- `core/navigation`: the sealed `Route` hierarchy, `Navigator` (`open` for the
+  list's picks, `push` for links), and `RouteEntries`, the seam through which
+  each feature adds its screens. `Pane.Extra` puts a screen beside a detail, as
+  the composer beside its thread
+- `feature/*`: screens, each with its own `RouteEntries`: `inbox`, `thread` (the
+  conversation in one scroll, and `ThreadReply`, its composer), `review` (PR
+  changes; `PullRequestLoad` fetches a PR in the background and
+  `PullRequestReview` shows it as it loads), `auth` (sign-in), `settings`, and
+  `feed` (Activity, placeholder)
 - `codeview`: Compose Multiplatform canvas renderer for code and diffs
 - `app`: the Metro graph (`AppGraph`) and `TongsApp`, the shared UI root with
   the navigation shell and list-detail scenes
@@ -62,8 +80,9 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   targets, namespace from the module path) and `tongs.compose`
 - `desktopApp`: desktop shell; runs the app, and keeps the spike modes behind
   flags
-- `androidApp`: Android shell; `MainActivity` runs the app, and
-  `PullRequestActivity` keeps the account-free PR spike
+- `androidApp`: Android shell; `MainActivity` runs the app
+  (`--es thread owner/repo#N` opens a thread), and `PullRequestActivity` keeps
+  the account-free PR spike
 
 ## Dev tool commands
 
@@ -87,6 +106,19 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   inbox, an open thread, settings, and a PR's changes offscreen with the
   signed-in account's real data (signs in with `gh`'s token if there's no
   account)
+- `./gradlew :desktopApp:run --args="--thread-screenshots=<dir> owner/repo#N…"`:
+  render public threads beside the inbox, and the first with its composer open,
+  offscreen with real data, in a throwaway data dir with the token in memory.
+  Private repos' notifications are dropped first, so the shots are safe to share
+- `./gradlew :feature:thread:verifyRoborazziJvm` and
+  `:core:markdown:verifyRoborazziJvm`: compare the thread, composer, and
+  Markdown against their screenshots (made-up data; they need the engine's JNI
+  library, which the tasks build); `recordRoborazziJvm` updates them
+- `./gradlew :app:jvmTest`: posting end to end (reply, close with comment, a
+  refused reply) against a fake GitHub GraphQL server
+- `adb -s <serial> shell am start -n dev.sargunv.tongs/.android.MainActivity --es thread owner/repo#N`:
+  open a thread on the first account, over the inbox. Always pass `-s`: several
+  teams share one adb server, and `installDebug` installs on every device
 - `./gradlew :feature:inbox:verifyRoborazziJvm`: compare the inbox against its
   screenshots in `feature/inbox/src/jvmTest/snapshots` (rows, views, filters,
   grouping, snoozed, and each sync problem, from made-up data);

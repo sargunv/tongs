@@ -25,6 +25,8 @@ interface AppGraph {
   val accounts: AccountRepository
   val inbox: InboxRepository
   val inboxSync: InboxSync
+  val environment: AppEnvironment
+  val httpClient: HttpClient
 
   @DependencyGraph.Factory
   fun interface Factory {

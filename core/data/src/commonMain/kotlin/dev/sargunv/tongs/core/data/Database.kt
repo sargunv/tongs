@@ -20,9 +20,13 @@ import kotlinx.coroutines.IO
       InboxThreadEntity::class,
       InboxSyncEntity::class,
       InboxViewEntity::class,
+      ThreadEntity::class,
+      ThreadItemEntity::class,
+      ReviewThreadEntity::class,
+      DraftEntity::class,
     ],
-  version = 2,
-  autoMigrations = [AutoMigration(from = 1, to = 2)],
+  version = 3,
+  autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
 )
 @ConstructedBy(TongsDatabaseConstructor::class)
 abstract class TongsDatabase : RoomDatabase() {
@@ -31,6 +35,10 @@ abstract class TongsDatabase : RoomDatabase() {
   abstract fun inbox(): InboxDao
 
   abstract fun inboxViews(): InboxViewDao
+
+  abstract fun threads(): ThreadDao
+
+  abstract fun drafts(): DraftDao
 }
 
 // Room generates the actual objects.

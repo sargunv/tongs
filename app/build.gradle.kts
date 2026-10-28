@@ -18,9 +18,17 @@ kotlin {
       implementation(project(":feature:review"))
       implementation(project(":feature:settings"))
       implementation(project(":feature:thread"))
+      implementation(libs.coil.compose)
+      implementation(libs.coil.network.ktor3)
       implementation(libs.lifecycle.runtime.compose)
       implementation(libs.lifecycle.viewmodel.compose)
       implementation(libs.lifecycle.viewmodel.navigation3)
+    }
+    // Posting end to end against a fake GitHub: the real adapter, Room, and the repositories.
+    jvmTest.dependencies {
+      implementation(libs.ktor.client.mock)
+      implementation(libs.kotlinx.serialization.json)
+      implementation(libs.sqlite.bundled)
     }
   }
 }

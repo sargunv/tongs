@@ -63,6 +63,17 @@ sealed interface Route : NavKey {
       get() = Pane.Detail
   }
 
+  /**
+   * The composer replying to [thread]. Beside the thread on wide windows, hiding the list; the
+   * whole screen on a phone. Its text is the thread's reply draft, so quoting appends to that draft
+   * before opening this.
+   */
+  @Serializable
+  data class ThreadReply(val thread: Thread) : Route {
+    override val pane: Pane
+      get() = Pane.Extra
+  }
+
   /** A PR's changes: one virtual surface over every file. Takes the whole window. */
   @Serializable
   data class PullRequestChanges(val accountId: Long, val repo: RepoRef, val number: Int) : Route {
@@ -77,6 +88,11 @@ enum class Pane {
   List,
   /** An item from the list beside it; on narrow windows, it covers the list. */
   Detail,
+  /**
+   * Beside a [Detail] screen, as a composer beside its thread: the list makes way for it on wide
+   * windows, and it covers everything on narrow ones.
+   */
+  Extra,
   /** The whole window, beside only the navigation rail. */
   Full,
 }

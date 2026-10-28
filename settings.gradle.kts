@@ -23,6 +23,8 @@ include(
   ":core:data",
   ":core:navigation",
   ":core:ui",
+  ":core:markdown",
+  ":core:composer",
   ":forge:api",
   ":forge:github",
   ":feature:auth",

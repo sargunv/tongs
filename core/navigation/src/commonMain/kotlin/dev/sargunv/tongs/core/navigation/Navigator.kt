@@ -45,11 +45,23 @@ class Navigator(private val backStack: MutableList<NavKey>) {
    */
   fun open(route: Route) {
     if (route == current) return
-    if (route.pane == Pane.Detail && current.pane == Pane.Detail) {
+    if (route.pane in REPLACEABLE && current.pane == route.pane) {
       backStack[backStack.lastIndex] = route
     } else {
       backStack.add(route)
     }
+  }
+
+  /**
+   * Opens [route] on top of the current screen, so back returns to it: for following a link from
+   * one thread to another, unlike picking one from the list.
+   */
+  fun push(route: Route) {
+    if (route == current) return
+    // A link followed from beside a composer leaves the composer; its draft is saved.
+    if (current.pane == Pane.Extra && route.pane != Pane.Extra)
+      backStack.removeAt(backStack.lastIndex)
+    if (route != current) backStack.add(route)
   }
 
   /** Goes back one screen. Returns false at the bottom of the stack. */
@@ -65,6 +77,8 @@ class Navigator(private val backStack: MutableList<NavKey>) {
     backStack.add(route)
   }
 }
+
+private val REPLACEABLE = setOf(Pane.Detail, Pane.Extra)
 
 val LocalNavigator = staticCompositionLocalOf<Navigator> { error("No Navigator provided") }
 
@@ -93,11 +107,13 @@ inline fun <reified K : Route> EntryProviderScope<NavKey>.route(
             detailPlaceholder = { DetailPaneFrame { detailPlaceholder() } },
           )
         Pane.Detail -> ListDetailSceneStrategy.detailPane()
+        Pane.Extra -> ListDetailSceneStrategy.extraPane()
         Pane.Full -> emptyMap()
       }
     },
     content = { key ->
-      if (key.pane == Pane.Detail) DetailPaneFrame { content(key) } else content(key)
+      if (key.pane == Pane.Detail || key.pane == Pane.Extra) DetailPaneFrame { content(key) }
+      else content(key)
     },
   )
 }

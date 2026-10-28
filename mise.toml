@@ -8,7 +8,8 @@ lockfile = true
 "aqua:jdx/jactionlint" = "2.3.0"
 "github:jdx/hk" = "2.9.0"
 "core:java" = "zulu-25.38.107.0"
-"core:rust" = { version = "1.99.1", profile = "minimal", components = "rustfmt,clippy" }
+"core:rust" = { version = "1.99.1", profile = "minimal", components = "rustfmt,clippy", targets = "aarch64-linux-android,x86_64-linux-android" }
+"github:bbqsrc/cargo-ndk" = "4.1.2"
 
 [env]
 ANDROID_HOME = "{{env.HOME}}/Android/Sdk"

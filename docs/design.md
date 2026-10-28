@@ -870,6 +870,128 @@ from other work):
   Warm passes are the same within noise. The review opens in 77 ms, and the JVM
   heap stays at 6 MiB.
 
+### 2026-10-28: Android fetch, measured on Linux.apk
+
+`androidApp` now fetches and opens any GitHub PR in the app, like the desktop's
+`--pr`. The PR comes from a github.com PR link as the intent's data or a `pr`
+extra, and defaults to #760. Changes:
+
+- **Shared loading glue.** `forge/github` has an Android target, and both
+  platforms share an OkHttp client in `jvmAndAndroidMain`. A new
+  `feature/review` module holds what the desktop shell used to do itself:
+  - `PullRequestLoad` runs `loadPullRequestReview` in the background.
+  - `PullRequestReview` swaps each snapshot in, fetches the files on screen
+    first, handles the jump, and logs when things reach the screen.
+
+  Each shell keeps only its platform wiring: the token, the store dir, the
+  highlighter, and lifecycle.
+
+- **The token is optional.** Git fetches of public repos need no auth, and a
+  review makes two REST calls against the 60 an hour GitHub allows without one.
+  Debuggable builds take a `token` extra, release builds ignore it, and no build
+  contains one. The desktop still uses `GH_TOKEN` or `gh auth token` if it can.
+- **The store** is `<cacheDir>/github.com/<owner>/<repo>/objects`. It's a cache:
+  everything in it can be fetched again, and "Clear cache" should clear it.
+- **One `Highlighter` per process,** since its cache is keyed by blob.
+- **The activity handles size changes itself** (`configChanges`), so resizing a
+  window doesn't restart a load. That matters on desktops and foldables.
+- **The adb-pushed store is gone.** The app fills its own store, so a benchmark
+  run on a warm store costs only the two REST calls. `bench` now waits for the
+  load, then runs the desktop's passes, cold then warm when highlighting.
+
+Method:
+
+- **[Linux.apk](https://github.com/sargunv/linux.apk)**, built from source at
+  `dcf03df`, since there's no release yet.
+  - A test session (`LINUXAPK_INSTANCE=tongs`) on its pinned AOSP 17 image (API
+    37, x86_64), with RADV on the host's Radeon 8060S.
+  - It ran inside an isolated nested KWin (`--virtual`, 1920×1080).
+  - The app's window is 1280×800 at 160 dpi, about 40 rows of 150 columns.
+- **The emulator** from the Android entry above, run headless (`-no-window`), at
+  1080×2400 and 420 dpi: about 44 rows of 36 columns.
+- Both ran the same release APK, AOT-compiled with `speed`, with no token.
+- Other agents kept the host's load average at 12–32 during the Linux.apk runs
+  and 6–13 during the emulator runs.
+
+**Cold in-app load of #760.** Times run from `onCreate` to the frame that shows
+the result; the process starts about 20 ms before `onCreate`.
+
+| Where            | Runs | Headers on screen | Fully loaded on screen | Commits and trees request |
+| ---------------- | ---- | ----------------- | ---------------------- | ------------------------- |
+| Linux.apk        | 7    | 0.40–1.11 s       | 1.03–2.24 s            | 0.25–0.78 s               |
+| Emulator         | 5    | 0.33–0.57 s       | 0.92–1.22 s            | 0.22–0.26 s               |
+| Desktop (`--pr`) | 8    | 0.93–1.54 s       | 1.7–7.4 s              | 0.23–0.32 s               |
+
+- Every cold load made 14 requests for 5 MiB of packs.
+- On a warm store, Linux.apk shows all 602,759 rows in 0.19–0.26 s, and the
+  emulator in 0.23 s. Most of that is the PR metadata call.
+- The metadata call usually took 0.1–0.3 s on Android (once 1.3 s), and
+  0.54–0.85 s on the desktop with or without a token. The desktop's time likely
+  includes the JVM warming up Ktor.
+- Linux.apk's network (pasta) shows more spread on the first request than the
+  emulator's, and runs interleaved with the emulator still differed. Five runs
+  each aren't enough to call it slower.
+- Desktop runs went through `xvfb-run`, so they drew in software, with
+  highlighting. They're a same-hour reference, not a comparison.
+
+**Fling and scrub.** These are the desktop's passes, measured as draw CPU per
+frame. The earlier emulator runs above were plain text and windowed.
+
+| Pass                     | Linux.apk p50 | p99       | Emulator p50 | p99       | Earlier, p50 / p99    |
+| ------------------------ | ------------- | --------- | ------------ | --------- | --------------------- |
+| Fling, plain             | 0.18–0.19 ms  | 0.38–0.42 | 0.18–0.19    | 0.48–0.56 | 0.20–0.33 / 0.59–2.93 |
+| Scrub, plain             | 0.19–0.30 ms  | 0.36–0.55 | 0.24–0.26    | 0.57–0.63 | 0.18–0.27 / 0.46–0.83 |
+| Fling, highlighted, cold | 0.28–0.39 ms  | 0.53–1.04 | 0.23–0.28    | 0.63–0.74 |                       |
+| Fling, highlighted, warm | 0.23–0.38 ms  | 0.44–1.22 | 0.20–0.21    | 0.52–0.57 |                       |
+| Scrub, highlighted, cold | 0.27–0.40 ms  | 0.49–1.52 | 0.24–0.25    | 0.58–0.60 |                       |
+| Scrub, highlighted, warm | 0.27–0.50 ms  | 0.48–1.62 | 0.30–0.32    | 0.67–0.73 |                       |
+
+There were 3 plain and 8 highlighted runs on Linux.apk, one of which stalled
+after its first pass, and 2 of each on the emulator. Rows drawn plain were
+0–0.1% on cold flings, and 22–40% on cold scrubs on Linux.apk against 26% on the
+emulator. After the passes, the JVM heap held 3–4 MiB, and the native heap 54–61
+MiB plain and 76–81 MiB with 13 MiB of highlights.
+
+Findings:
+
+- **Frames held on both.** The frame interval was 16.67 ms at p99 in every pass.
+  Linux.apk missed 1–2 vsyncs, in the cold fling of 3 of its 8 highlighted runs,
+  and none anywhere else. The emulator missed none.
+  - The earlier emulator runs missed up to 1,100 vsyncs, in its windowed
+    host-GPU pipe. Running headless avoids that.
+- **Linux.apk reports real GPU time.** Its HWUI stages were all under 4 ms at
+  p99, and GPU time was 0.67–1.78 ms. The emulator reports about 15.5 ms of GPU
+  in every frame, which is its fence waiting for vsync, not work.
+- **Draw cost is about the same on both,** within host noise, though Linux.apk's
+  rows show four times as many columns.
+- **One Linux.apk run stalled** after its first pass and never logged the next.
+  It didn't happen again in seven more runs, and its log was cleared before
+  anyone looked, so the cause is unknown: our code or Linux.apk's frame
+  delivery.
+
+Notes on Linux.apk:
+
+- It needs a source build: about 8 minutes, reusing build container images
+  already on the host. It installs over its own CLI, and `linuxapk-session exec`
+  runs `am`, `cmd`, `logcat`, and `dumpsys` as adb would.
+- Each app window is its own Android display, so `screencap` shows the launcher.
+  Screenshots come from `spectacle` in the nested KWin instead.
+- Its nested-KWin recipe puts the Wayland socket under the checkout. From a deep
+  path that exceeds the 108-byte socket limit, and KWin crashes. A short private
+  `XDG_RUNTIME_DIR` works around it.
+- `linuxapk install` writes a desktop entry under `$XDG_DATA_HOME`, even for a
+  test instance. Pointing `XDG_DATA_HOME` at the nested desktop's data, and
+  `LINUXAPK_IMAGES` at the shared image cache, keeps it off the real menu.
+
+Not covered yet:
+
+- A physical device and a baseline profile, as before
+- What happens to the store if the system deletes some of its packs while the
+  app is running
+- A sign-in flow; tokens only come in through the debug extra
+- Resizing a Linux.apk window during a load. `configChanges` should keep the
+  load, but nobody has watched it happen.
+
 ## Plan
 
 0. **Spike the engine first. It's the main risk.**

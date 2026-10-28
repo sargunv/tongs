@@ -629,10 +629,14 @@ them together.
 - Helix queries are MPL-2.0. That's fine to bundle unmodified, and changes to
   those files must stay MPL.
 - The `nvim-treesitter` queries are Apache-2.0 but use Neovim-only predicates.
-- **Don't copy Zed's `language`, `editor`, or `languages` crates or its built-in
-  queries.** They're GPL-3.0, which would make the whole app GPL. GPUI and
-  `sum_tree` are Apache-2.0 and safe to borrow from.
-- The app's own license is still undecided. See the questions below.
+- Zed's `language`, `editor`, and `languages` crates and its built-in queries
+  are GPL-3.0, which is compatible with our license. Helix's queries are still
+  the choice, on merit (see highlighting). GPUI and `sum_tree` are Apache-2.0.
+- **Tongs is GPL-3.0-or-later** (decided 2026-10-28). GPLv3 rather than v2,
+  because Apache-2.0 dependencies (gix, Compose, AndroidX) are only compatible
+  with v3. F-Droid is happy with it. Apple's App Store terms conflict with the
+  GPL for code others contributed, which only matters if we ever ship iOS; the
+  owner can relicense their own code, and contributions would then need consent.
 
 ## Spike results
 
@@ -1296,6 +1300,4 @@ Not covered yet:
 
 These are product calls, not technical ones:
 
-- **License.** GPL or Apache/MIT? This mostly matters for what we can borrow and
-  for F-Droid.
 - **Name.**

@@ -131,3 +131,6 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   don't fork it. Desktop differs through `TongsDensity`, not other components.
 - Room schema changes bump `TongsDatabase`'s version and commit the exported
   schema in `core/data/schemas`.
+- Tongs is GPL-3.0-or-later (`LICENSE`). Vendored third-party files keep their
+  own licenses and notices, e.g. Helix's MPL-2.0 queries in
+  `engine-rs/highlight/queries`.

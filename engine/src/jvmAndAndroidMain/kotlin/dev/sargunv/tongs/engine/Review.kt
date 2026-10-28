@@ -29,7 +29,9 @@ class Review private constructor(private var handle: Long) : ReviewRows, AutoClo
     repeat(count) {
       val textLength = buffer.getInt(pos + 16)
       val text = ByteArray(textLength)
-      buffer.get(pos + RECORD_HEADER, text)
+      // Relative get: the absolute bulk `get(index, dst)` needs Android API 35.
+      buffer.position(pos + RECORD_HEADER)
+      buffer.get(text)
       out +=
         Row(
           kind = KINDS[buffer.get(pos).toInt()],

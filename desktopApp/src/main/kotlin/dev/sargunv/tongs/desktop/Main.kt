@@ -27,6 +27,9 @@ import org.jetbrains.skia.EncodedImageFormat
  * - `--pr owner/repo#number [--store=dir] [--exit-when-loaded] [--jump=fraction] [--no-highlight]`
  *   fetches a PR in-app without an account; see [runPullRequest].
  * - `--app-screenshots=dir` renders the app's main screens offscreen; see [renderAppScreenshots].
+ * - `--changes-screenshots=dir [--open=owner/repo#N] [--review=owner/repo#N] [--api-url=url]
+ *   [--mutate]` drives the PR changes screen offscreen; see [renderChangesScreenshots].
+ * - `--open=owner/repo#N` (or a PR link) runs the app with that PR's changes open.
  * - `--thread-screenshots=dir owner/repo#number…` renders public threads and the composer
  *   offscreen; see [renderThreadScreenshots].
  */
@@ -36,18 +39,26 @@ fun main(args: Array<String>) {
       "--bench" in args ||
       "--pr" in args ||
       args.any { it.startsWith("--screenshot=") }
+  fun flag(name: String) = args.firstNotNullOfOrNull {
+    it.removePrefix("--$name=").takeIf { s -> s != it }
+  }
   if (!spike) {
-    val shots = args.firstNotNullOfOrNull {
-      it.removePrefix("--app-screenshots=").takeIf { s -> s != it }
-    }
-    val threadShots = args.firstNotNullOfOrNull {
-      it.removePrefix("--thread-screenshots=").takeIf { s -> s != it }
-    }
+    val shots = flag("app-screenshots")
+    val changes = flag("changes-screenshots")
+    val threadShots = flag("thread-screenshots")
     when {
       threadShots != null ->
         renderThreadScreenshots(File(threadShots), args.filterNot { it.startsWith("--") })
       shots != null -> renderAppScreenshots(File(shots))
-      else -> runApp()
+      changes != null ->
+        renderChangesScreenshots(
+          File(changes),
+          pr = flag("open") ?: "maplibre/maplibre-native-ffi#760",
+          review = flag("review"),
+          apiUrl = flag("api-url"),
+          mutate = "--mutate" in args,
+        )
+      else -> runApp(open = flag("open"))
     }
     return
   }

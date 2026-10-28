@@ -4,7 +4,76 @@ package dev.sargunv.tongs.engine
 interface ReviewSnapshot : ReviewRows, AutoCloseable {
   /** Whether [file]'s diff is in, rather than a placeholder row. */
   fun fileLoaded(file: Int): Boolean
+
+  /** Whether every changed file is known, though some may still be loading. */
+  val isComplete: Boolean
+    get() = true
+
+  /** Every file's metadata, in display order, read in one call. */
+  fun files(): List<ReviewFile> = emptyList()
+
+  /**
+   * The same files laid out for reading, as a new snapshot to close separately. Cheap: files are
+   * shared, and only per-file row counts are rebuilt.
+   */
+  fun withLayout(layout: ReviewLayout): ReviewSnapshot = this
+
+  /** Line [line] of [file] on [side] as it is in the blob, tabs and all; empty if there's none. */
+  fun lineText(file: Int, side: DiffSide, line: Int): String = ""
 }
+
+/** Why a file is grouped away from the rest, if it is. Mirrors `classify.rs`. */
+enum class FileClass {
+  Normal,
+  Generated,
+  Lockfile,
+  Vendored,
+  /** Moved with identical content. */
+  Renamed,
+}
+
+enum class ChangeKind {
+  Added,
+  Deleted,
+  Modified,
+  Renamed,
+}
+
+/** One changed file. Blob ids are hex, null on the side where the file doesn't exist. */
+data class ReviewFile(
+  val path: String,
+  val oldPath: String?,
+  val kind: ChangeKind,
+  val fileClass: FileClass,
+  val additions: Int,
+  val deletions: Int,
+  val oldBlob: String?,
+  val newBlob: String?,
+  val loaded: Boolean,
+  val binary: Boolean,
+) {
+  /** The blob a reader sees: the new one, or the old one for a deleted file. */
+  val blob: String?
+    get() = newBlob ?: oldBlob
+}
+
+/**
+ * How a snapshot is laid out for reading: [collapsed] files (indexed like [ReviewSnapshot.files])
+ * show only their header, and each insert reserves rows under a line for UI drawn over them.
+ */
+class ReviewLayout(val collapsed: BooleanArray, val inserts: List<LayoutInsert> = emptyList())
+
+/**
+ * Reserves [rows] rows under [line] of [file] on [side], as block [id]. Line 0, or a line the diff
+ * doesn't show, puts it under the file's header; files still loading get none.
+ */
+data class LayoutInsert(
+  val file: Int,
+  val side: DiffSide,
+  val line: Int,
+  val rows: Int,
+  val id: Int,
+)
 
 /**
  * How a [FetchSession] plans requests. See `FetchOptions` in `engine-rs/engine/src/fetch.rs`.

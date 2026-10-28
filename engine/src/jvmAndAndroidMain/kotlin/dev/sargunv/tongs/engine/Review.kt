@@ -26,6 +26,64 @@ internal constructor(internal var handle: Long, private val highlighter: Highlig
 
   override fun fileLoaded(file: Int): Boolean = NativeFetch.fileLoaded(handle, file)
 
+  override val isComplete: Boolean
+    get() = NativeEngine.reviewComplete(handle)
+
+  override fun files(): List<ReviewFile> {
+    val buffer = ByteBuffer.wrap(NativeEngine.fileInfo(handle)).order(ByteOrder.LITTLE_ENDIAN)
+    val out = ArrayList<ReviewFile>(fileCount)
+    fun blob(): String? {
+      val bytes = ByteArray(20).also(buffer::get)
+      return if (bytes.all { it == 0.toByte() }) null else bytes.toHex()
+    }
+    fun text(): String = ByteArray(buffer.getInt()).also(buffer::get).decodeToString()
+    while (buffer.hasRemaining()) {
+      val fileClass = FILE_CLASSES[buffer.get().toInt()]
+      val kind = CHANGE_KINDS[buffer.get().toInt()]
+      val flags = buffer.get().toInt()
+      buffer.get()
+      val additions = buffer.getInt()
+      val deletions = buffer.getInt()
+      val oldBlob = blob()
+      val newBlob = blob()
+      val path = text()
+      val oldPath = text().ifEmpty { null }
+      out +=
+        ReviewFile(
+          path = path,
+          oldPath = oldPath,
+          kind = kind,
+          fileClass = fileClass,
+          additions = additions,
+          deletions = deletions,
+          oldBlob = oldBlob,
+          newBlob = newBlob,
+          loaded = flags and 1 != 0,
+          binary = flags and 2 != 0,
+        )
+    }
+    return out
+  }
+
+  override fun withLayout(layout: ReviewLayout): ReviewSnapshot {
+    val collapsed = ByteArray(fileCount) { if (layout.collapsed.getOrElse(it) { false }) 1 else 0 }
+    val inserts = IntArray(layout.inserts.size * 5)
+    layout.inserts.forEachIndexed { i, insert ->
+      inserts[i * 5] = insert.file
+      inserts[i * 5 + 1] = insert.side.ordinal
+      inserts[i * 5 + 2] = insert.line
+      inserts[i * 5 + 3] = insert.rows
+      inserts[i * 5 + 4] = insert.id
+    }
+    return Review(NativeEngine.withLayout(handle, collapsed, inserts), highlighter)
+  }
+
+  override fun findRow(file: Int, row: Row): Int =
+    NativeEngine.findRow(handle, file, row.kind.ordinal, row.oldLine, row.newLine)
+
+  override fun lineText(file: Int, side: DiffSide, line: Int): String =
+    NativeEngine.lineText(handle, file, side.ordinal, line)
+
   override fun rows(first: Int, count: Int): List<Row> {
     val out = ArrayList<Row>(count)
     while (out.size < count && first + out.size < rowCount) {
@@ -65,6 +123,7 @@ internal constructor(internal var handle: Long, private val highlighter: Highlig
             if (spanCount == 0) Row.NoSpans
             else IntArray(spanCount) { buffer.getInt(spansAt + it * 4) },
           highlightPending = flags and FLAG_HIGHLIGHT_PENDING != 0,
+          collapsed = flags and FLAG_COLLAPSED != 0,
         )
       pos += RECORD_HEADER + textLength + spanCount * 4
     }
@@ -83,7 +142,13 @@ internal constructor(internal var handle: Long, private val highlighter: Highlig
   companion object {
     private const val RECORD_HEADER = 20
     private const val FLAG_HIGHLIGHT_PENDING = 1
+    private const val FLAG_COLLAPSED = 2
     private val KINDS = RowKind.entries
+    private val FILE_CLASSES = FileClass.entries
+    private val CHANGE_KINDS = ChangeKind.entries
+
+    private fun ByteArray.toHex(): String =
+      joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
 
     /** Opens a review of two commits whose objects are already in the store at [storeDir]. */
     fun open(

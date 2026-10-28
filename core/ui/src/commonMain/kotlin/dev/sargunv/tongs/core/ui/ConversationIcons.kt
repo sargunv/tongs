@@ -1,10 +1,6 @@
 package dev.sargunv.tongs.core.ui
 
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.addPathNodes
-import androidx.compose.ui.unit.dp
 
 /**
  * Icons for conversations: the thread, its timeline, and the composer. Material Symbols (outlined,
@@ -222,14 +218,3 @@ object ConversationIcons {
     )
   }
 }
-
-private fun symbol(name: String, pathData: String): ImageVector =
-  ImageVector.Builder(
-      name = name,
-      defaultWidth = 24.dp,
-      defaultHeight = 24.dp,
-      viewportWidth = 960f,
-      viewportHeight = 960f,
-    )
-    .addPath(addPathNodes(pathData), fill = SolidColor(Color.Black))
-    .build()

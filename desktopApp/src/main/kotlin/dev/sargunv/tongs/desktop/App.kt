@@ -5,23 +5,26 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import dev.sargunv.tongs.app.TongsApp
+import dev.sargunv.tongs.app.changesBackStack
 import dev.sargunv.tongs.app.createAppGraph
 import dev.sargunv.tongs.core.data.AppEnvironment
 import dev.sargunv.tongs.core.data.KeychainTokenStore
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
-/** The app in a window. */
-fun runApp() {
+/** The app in a window, with [open]'s changes open if it's a PR (`owner/repo#N` or a link). */
+fun runApp(open: String? = null) {
   val graph = createAppGraph(DesktopEnvironment())
+  val stack = open?.let { runBlocking { graph.changesBackStack(it) } }
   application {
     Window(
       onCloseRequest = ::exitApplication,
       title = "Tongs",
       state = rememberWindowState(width = 1280.dp, height = 860.dp),
     ) {
-      TongsApp(graph)
+      TongsApp(graph, stack)
     }
   }
 }

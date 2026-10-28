@@ -15,15 +15,61 @@ pub enum ChangeKind {
     Added,
     Deleted,
     Modified,
+    /// Moved with identical content; see [`pair_renames`].
+    Renamed,
 }
 
 #[derive(Clone, Debug)]
 pub struct Change {
     pub path: String,
     pub kind: ChangeKind,
+    /// Where a renamed file came from.
+    pub old_path: Option<String>,
     /// Blob ids; `None` on the side where the file doesn't exist.
     pub old: Option<ObjectId>,
     pub new: Option<ObjectId>,
+}
+
+/// The empty blob: git doesn't pair empty files as renames, since any two
+/// would match.
+const EMPTY_BLOB: &str = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
+
+/// Pairs each deleted file with an added file of identical content, so a pure
+/// move reads as one rename instead of a delete and an add. Content-similarity
+/// renames aren't detected yet.
+pub fn pair_renames(changes: &mut Vec<Change>) {
+    let empty: ObjectId = EMPTY_BLOB.parse().unwrap();
+    let mut added: std::collections::HashMap<ObjectId, Vec<usize>> = Default::default();
+    for (i, change) in changes.iter().enumerate() {
+        if let (ChangeKind::Added, Some(id)) = (change.kind, change.new)
+            && id != empty
+        {
+            added.entry(id).or_default().push(i);
+        }
+    }
+    let mut renamed_from = vec![None; changes.len()];
+    let mut drop = vec![false; changes.len()];
+    for (i, change) in changes.iter().enumerate() {
+        if let (ChangeKind::Deleted, Some(id)) = (change.kind, change.old)
+            && let Some(targets) = added.get_mut(&id)
+            && !targets.is_empty()
+        {
+            let target = targets.remove(0);
+            renamed_from[target] = Some(change.path.clone());
+            drop[i] = true;
+        }
+    }
+    let mut i = 0;
+    changes.retain_mut(|change| {
+        let keep = !drop[i];
+        if let Some(from) = renamed_from[i].take() {
+            change.kind = ChangeKind::Renamed;
+            change.old = change.new;
+            change.old_path = Some(from);
+        }
+        i += 1;
+        keep
+    });
 }
 
 pub struct TreeWalk {
@@ -32,6 +78,11 @@ pub struct TreeWalk {
     /// Directory depth of the frontier; the root trees are depth 0.
     depth: u32,
     pub changes: Vec<Change>,
+    /// `.gitattributes` blobs on the new side of every directory the walk
+    /// expanded, as `(directory, blob)`; the root is `""`. A changed file's
+    /// directories all differ, so these are every attributes file that can
+    /// apply to a change.
+    pub attributes: Vec<(String, ObjectId)>,
 }
 
 impl TreeWalk {
@@ -40,6 +91,7 @@ impl TreeWalk {
             frontier: vec![(String::new(), Some(old_root), Some(new_root))],
             depth: 0,
             changes: Vec::new(),
+            attributes: Vec::new(),
         }
     }
 
@@ -74,6 +126,12 @@ impl TreeWalk {
         for (dir, old, new) in std::mem::take(&mut self.frontier) {
             let old_entries = entries(store, old, &mut old_buf)?;
             let new_entries = entries(store, new, &mut new_buf)?;
+            if let Some(entry) = new_entries
+                .iter()
+                .find(|e| e.0 == ".gitattributes" && e.2 == Node::Blob)
+            {
+                self.attributes.push((dir.clone(), entry.1));
+            }
             let (mut i, mut j) = (0, 0);
             while i < old_entries.len() || j < new_entries.len() {
                 let ordering = match (old_entries.get(i), new_entries.get(j)) {
@@ -141,6 +199,7 @@ impl TreeWalk {
         self.changes.push(Change {
             path,
             kind,
+            old_path: None,
             old,
             new,
         });
@@ -176,4 +235,43 @@ fn entries(store: &Store, id: Option<ObjectId>, buf: &mut Vec<u8>) -> Result<Vec
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change(path: &str, kind: ChangeKind, old: Option<&str>, new: Option<&str>) -> Change {
+        Change {
+            path: path.into(),
+            kind,
+            old_path: None,
+            old: old.map(|s| s.repeat(40).parse().unwrap()),
+            new: new.map(|s| s.repeat(40).parse().unwrap()),
+        }
+    }
+
+    #[test]
+    fn pairs_identical_deletes_and_adds() {
+        let mut changes = vec![
+            change("a/moved.txt", ChangeKind::Deleted, Some("1"), None),
+            change("b/edited.txt", ChangeKind::Modified, Some("2"), Some("3")),
+            change("c/moved.txt", ChangeKind::Added, None, Some("1")),
+            change("d/new.txt", ChangeKind::Added, None, Some("4")),
+        ];
+        pair_renames(&mut changes);
+        let summary: Vec<_> = changes
+            .iter()
+            .map(|c| (c.path.as_str(), c.kind, c.old_path.as_deref()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("b/edited.txt", ChangeKind::Modified, None),
+                ("c/moved.txt", ChangeKind::Renamed, Some("a/moved.txt")),
+                ("d/new.txt", ChangeKind::Added, None),
+            ]
+        );
+        assert_eq!(changes[1].old, changes[1].new);
+    }
 }

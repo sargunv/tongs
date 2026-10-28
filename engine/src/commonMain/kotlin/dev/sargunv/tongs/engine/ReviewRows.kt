@@ -9,6 +9,19 @@ enum class RowKind {
   Binary,
   /** Stands in for a file's diff until its blobs arrive. */
   Loading,
+  /** The body of a file that moved without changes. */
+  Renamed,
+  /**
+   * A row reserved under a line by [ReviewLayout.inserts], for UI drawn over it. [Row.oldLine] is
+   * the block's id and [Row.newLine] the row's index within it.
+   */
+  Annotation,
+}
+
+/** A side of a diff. */
+enum class DiffSide {
+  Old,
+  New,
 }
 
 /** Token styles the engine assigns. Mirrors `Style` in `engine-rs/highlight/src/style.rs`. */
@@ -50,7 +63,22 @@ class Row(
   val spans: IntArray = NoSpans,
   /** Highlights for this row are still being computed. */
   val highlightPending: Boolean = false,
+  /** A [RowKind.FileHeader] whose file the layout collapsed. */
+  val collapsed: Boolean = false,
 ) {
+  /** The side and line a code row shows: the old side for removed lines, the new side otherwise. */
+  val side: DiffSide?
+    get() =
+      when (kind) {
+        RowKind.Removed -> DiffSide.Old
+        RowKind.Added,
+        RowKind.Context -> DiffSide.New
+        else -> null
+      }
+
+  val line: Int
+    get() = if (kind == RowKind.Removed) oldLine else newLine
+
   companion object {
     val NoSpans = IntArray(0)
 
@@ -74,6 +102,12 @@ interface ReviewRows {
 
   /** Rows `first until first + count`, clamped to the review. */
   fun rows(first: Int, count: Int): List<Row>
+
+  /**
+   * Where a row with [row]'s content sits in [file] here, or -1: code rows match by kind and line
+   * numbers, annotation rows by block and index. Keeps the reader's place when a layout changes.
+   */
+  fun findRow(file: Int, row: Row): Int = -1
 
   /**
    * Calls [listener], on any thread, whenever highlights land that rows already returned with

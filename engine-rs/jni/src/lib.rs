@@ -7,10 +7,10 @@
 
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
-use jni::objects::{JByteBuffer, JClass, JString};
-use jni::sys::{jint, jlong};
+use jni::objects::{JByteArray, JByteBuffer, JClass, JIntArray, JString};
+use jni::sys::{jboolean, jint, jlong};
 use std::sync::Arc;
-use tongs_engine::review::{Review, TAB};
+use tongs_engine::review::{Insert, Layout, Review, RowKind, Side, TAB};
 
 mod fetch;
 mod snippet;
@@ -25,6 +25,8 @@ use tongs_highlight::service::{Highlights, Lookup};
 const RECORD_HEADER: usize = 20;
 /// Record flag: highlights for this row are still being computed.
 const FLAG_HIGHLIGHT_PENDING: u8 = 1;
+/// Record flag: a header whose file the layout collapsed.
+const FLAG_COLLAPSED: u8 = 2;
 
 /// Engine errors, surfaced to Kotlin as `RuntimeException`s.
 #[derive(Debug)]
@@ -266,7 +268,7 @@ fn fill_rows(
         text.clear();
         spans.clear();
         review.row_text(&row, &mut text);
-        let mut flags = 0;
+        let mut flags = if row.collapsed { FLAG_COLLAPSED } else { 0 };
         if let (Some(request), Some(source)) = (&mut request, review.row_source(&row)) {
             let lookup = match lookups.iter().find(|(blob, _)| *blob == source.blob) {
                 Some((_, lookup)) => lookup,
@@ -325,4 +327,136 @@ fn fill_rows(
         written += 1;
     }
     written
+}
+
+/// Every file's metadata, packed for one call: per file, its class, change
+/// kind, and flags (1 loaded, 2 binary) as u8s and a pad byte; additions and
+/// deletions as u32s; old and new blob ids as 20 bytes each, zero when
+/// absent; then the path and the old path (empty unless renamed), each as a
+/// u32 length and UTF-8 bytes. Little-endian.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_fileInfo<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> JByteArray<'local> {
+    env.with_env(|env| -> Result<_, Error> {
+        let review = review(handle);
+        let mut out = Vec::with_capacity(review.files.len() * 96);
+        for (file, class) in review.files.iter().zip(&review.classes) {
+            let flags = u8::from(file.loaded) | (u8::from(file.is_binary()) << 1);
+            out.extend_from_slice(&[*class as u8, file.kind as u8, flags, 0]);
+            out.extend_from_slice(&file.additions.to_le_bytes());
+            out.extend_from_slice(&file.deletions.to_le_bytes());
+            for id in [file.old_id, file.new_id] {
+                match id {
+                    Some(id) => out.extend_from_slice(id.as_bytes()),
+                    None => out.extend_from_slice(&[0; 20]),
+                }
+            }
+            for text in [file.path.as_str(), file.old_path.as_deref().unwrap_or("")] {
+                out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+                out.extend_from_slice(text.as_bytes());
+            }
+        }
+        Ok(env.byte_array_from_slice(&out)?)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Whether every changed file is known, though some may still be loading.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_reviewComplete<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> jboolean {
+    review(handle).complete
+}
+
+/// A new review handle with the same files laid out for reading:
+/// `collapsed` has a byte per file, nonzero to collapse it, and `inserts`
+/// has five ints per block: file, side (0 old, 1 new), line, rows, and id.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_withLayout<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    collapsed: JByteArray<'local>,
+    inserts: JIntArray<'local>,
+) -> jlong {
+    env.with_env(|env| -> Result<jlong, Error> {
+        let collapsed_len = collapsed.len(env)?;
+        let mut flags = vec![0i8; collapsed_len];
+        collapsed.get_region(env, 0, &mut flags)?;
+        let inserts_len = inserts.len(env)?;
+        let mut ints = vec![0i32; inserts_len];
+        inserts.get_region(env, 0, &mut ints)?;
+        let layout = Layout {
+            collapsed: flags.iter().map(|&f| f != 0).collect(),
+            inserts: ints
+                .as_chunks::<5>()
+                .0
+                .iter()
+                .map(|c| Insert {
+                    file: c[0] as u32,
+                    side: if c[1] == 0 { Side::Old } else { Side::New },
+                    line: c[2] as u32,
+                    rows: c[3] as u32,
+                    id: c[4] as u32,
+                })
+                .collect(),
+        };
+        Ok(review_handle(review(handle).with_layout(&layout)))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// The row with this content in `file`, or -1; see `Review::find_row`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_findRow<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    file: jint,
+    kind: jint,
+    old_line: jint,
+    new_line: jint,
+) -> jint {
+    let Some(kind) = ROW_KINDS.get(kind as usize) else {
+        return -1;
+    };
+    review(handle)
+        .find_row(file as usize, *kind, old_line as u32, new_line as u32)
+        .map_or(-1, |row| row as jint)
+}
+
+const ROW_KINDS: [RowKind; 9] = [
+    RowKind::FileHeader,
+    RowKind::Hunk,
+    RowKind::Context,
+    RowKind::Added,
+    RowKind::Removed,
+    RowKind::Binary,
+    RowKind::Loading,
+    RowKind::Renamed,
+    RowKind::Annotation,
+];
+
+/// A line as it is in the blob, tabs and all; side 0 is old, 1 new.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_lineText<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    file: jint,
+    side: jint,
+    line: jint,
+) -> JString<'local> {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let side = if side == 0 { Side::Old } else { Side::New };
+        let text = review(handle).line_text(file as usize, side, line as u32);
+        JString::from_str(env, String::from_utf8_lossy(text))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
 }

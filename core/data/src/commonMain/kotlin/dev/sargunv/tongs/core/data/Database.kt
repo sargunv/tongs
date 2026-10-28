@@ -24,9 +24,21 @@ import kotlinx.coroutines.IO
       ThreadItemEntity::class,
       ReviewThreadEntity::class,
       DraftEntity::class,
+      // PR changes; see PullRequestChangesDao.kt.
+      PullRequestOverviewEntity::class,
+      ViewedFileEntity::class,
+      DraftCommentEntity::class,
+      DraftReviewEntity::class,
+      ChangesThreadEntity::class,
+      ChangesThreadCommentEntity::class,
     ],
-  version = 3,
-  autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
+  version = 4,
+  autoMigrations =
+    [
+      AutoMigration(from = 1, to = 2),
+      AutoMigration(from = 2, to = 3),
+      AutoMigration(from = 3, to = 4),
+    ],
 )
 @ConstructedBy(TongsDatabaseConstructor::class)
 abstract class TongsDatabase : RoomDatabase() {
@@ -39,6 +51,8 @@ abstract class TongsDatabase : RoomDatabase() {
   abstract fun threads(): ThreadDao
 
   abstract fun drafts(): DraftDao
+
+  abstract fun pullRequestChanges(): PullRequestChangesDao
 }
 
 // Room generates the actual objects.

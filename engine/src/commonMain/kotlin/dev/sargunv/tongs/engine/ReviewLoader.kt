@@ -46,6 +46,12 @@ class ReviewLoader(
   private var prioritized: List<String>? = null
   private var held: ReviewSnapshot? = null
   private var sawHeaders = false
+
+  /** The commit the latest review shows the changes up to, as for anchoring comments. */
+  @Volatile
+  var newCommit: String? = null
+    private set
+
   private var sawBody = false
 
   /**
@@ -59,6 +65,7 @@ class ReviewLoader(
       held?.close()
       held = null
       this.speculative = if (speculative) oldCommit to newCommit else null
+      this.newCommit = newCommit
       session.startReview(oldCommit, newCommit)
     }
     events.trySend(null)

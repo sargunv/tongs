@@ -9,8 +9,10 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
 
 - `docs/design.md`: architecture and the reasoning behind it
 - `engine-rs/engine`: Rust code engine (`tongs-engine`): git protocol v2 fetch
-  without HTTP, a sans-IO fetch session (`fetch.rs`), object store, tree walk,
-  file diff
+  without HTTP, a sans-IO fetch session (`fetch.rs`), object store, tree walk
+  with exact renames, file classification from `.gitattributes` and path
+  heuristics (`classify.rs`), file diff, and the review row model with its
+  reading layout (collapsed files, rows reserved for inline cards)
 - `engine-rs/spike`: CLI that reviews a GitHub PR from git objects alone and
   times each stage
 - `engine-rs/highlight`: syntax highlighting (`tongs-highlight`): tree-sitter
@@ -21,10 +23,11 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   into its own compressed shared library for Android; `:engine:buildGrammars`
   runs it before cargo-ndk
 - `engine-rs/jni`: JNI bindings (`libtongs_jni`) for the Kotlin `engine` module
-- `engine`: Kotlin facade over the engine (`Review`, row model types,
-  `FetchSession`, and `ReviewLoader`, which drives a session over HTTP); JVM and
-  Android targets share the JNI code in `jvmAndAndroidMain`, and the Android
-  target packages `libtongs_jni` for arm64-v8a and x86_64
+- `engine`: Kotlin facade over the engine (`Review`, row model types, file
+  metadata (`ReviewFile`), `ReviewLayout`, `FetchSession`, and `ReviewLoader`,
+  which drives a session over HTTP); JVM and Android targets share the JNI code
+  in `jvmAndAndroidMain`, and the Android target packages `libtongs_jni` for
+  arm64-v8a and x86_64
 - `forge/api`: the forge-neutral model: `Instance`, `Account`, `Capability`,
   open enums (`NotificationReason`, `SubjectType`), typed failures
   (`ForgeException`), what's new on a thread (`SubjectActivity`,
@@ -33,15 +36,17 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   OAuth device flow, `InboxSource`, `InboxHydrator`, `ReviewSource`, and
   `ThreadSource` with the conversation model in `Thread.kt` (`ThreadDetail`,
   typed `TimelineItem`s, `ReviewThread`, and open enums that serialize as their
-  raw value)
+  raw value), and `PullRequestReviews` (threads, viewed state, submitting a
+  review) with the neutral `ReviewAnchor`
 - `forge/github`: the GitHub adapter: notifications REST (unread only; see
   `docs/design.md`), inbox hydration (`GitHubHydrator`, which batches
   `InboxHydration.graphql` under aliases), error mapping (`GitHubErrors.kt`:
   rate limits, scopes, SAML SSO), token checks through Apollo GraphQL
   (`src/commonMain/graphql`, with GitHub's public schema), the device flow,
   issue and PR threads (`GitHubThreads`, from `Thread.graphql`, whose operations
-  and fragments all start with `Thread`), and git smart HTTP and
-  `loadPullRequestReview` for reviews
+  and fragments all start with `Thread`), git smart HTTP and
+  `loadPullRequestReview` for reviews, and `GitHubPullRequestReviews` (GraphQL
+  reads and viewed state, REST review submission, and the anchor's lowering)
 - `core/net`: the shared Ktor client (OkHttp on both platforms) and conditional
   request, poll interval, `Link`, and rate limit helpers
 - `core/data`: Room 3 (`TongsDatabase`, schemas in `core/data/schemas`), the
@@ -49,14 +54,16 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   undo (`InboxRepository`), filters in GitHub's vocabulary (`InboxQuery`), saved
   views (`InboxViewRepository`), threads cached as JSON documents with
   optimistic comments, reactions, and state changes (`ThreadRepository`), drafts
-  for every composer (`DraftRepository`, keyed by `DraftKey`), accounts and
-  per-account forge clients, settings in DataStore, and `TokenStore`
-  implementations (Android Keystore; desktop OS keychain with a private-file
-  fallback)
+  for every composer (`DraftRepository`, keyed by `DraftKey`), the PR changes
+  screen's store (`PullRequestChangesRepository`: viewed files keyed by path and
+  blob, the pending review's drafts, review threads; tables prefixed
+  `changes_`), accounts and per-account forge clients, settings in DataStore,
+  and `TokenStore` implementations (Android Keystore; desktop OS keychain with a
+  private-file fallback)
 - `core/ui`: the design system: `TongsTheme` (Material 3 Expressive), density
   per platform, `TongsIcons` (Material Symbols), `ListRow`, `SwipeActionsBox`,
   `stateColors()` (open, merged, closed, and checks, harmonized with the theme),
-  `ConversationIcons`, `Avatar` (Coil), `TongsTopAppBar`, and
+  `ConversationIcons`, `ReviewIcons`, `Avatar` (Coil), `TongsTopAppBar`, and
   `TongsNavigationSuite`
 - `core/markdown`: `ForgeMarkdown` (mikepenz's renderer, with references linked
   by `linkifyReferences`, common GitHub HTML converted, Coil images, and code
@@ -70,10 +77,14 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   the composer beside its thread
 - `feature/*`: screens, each with its own `RouteEntries`: `inbox`, `thread` (the
   conversation in one scroll, and `ThreadReply`, its composer), `review` (PR
-  changes; `PullRequestLoad` fetches a PR in the background and
-  `PullRequestReview` shows it as it loads), `auth` (sign-in), `settings`, and
-  `feed` (Activity, placeholder)
-- `codeview`: Compose Multiplatform canvas renderer for code and diffs
+  changes: `ChangesController` lays the review out as it loads, `FileTree` and
+  `FileTreePane`, inline cards, the review pane, and `CommentComposer`, the seam
+  for another composer; `PullRequestLoad` fetches a PR in the background, and
+  `PullRequestReview` is the spikes' bare view), `auth` (sign-in), `settings`,
+  and `feed` (Activity, placeholder)
+- `codeview`: Compose Multiplatform canvas renderer for code and diffs, with
+  file headers (collapse, counts, viewed box), gutter line selection, and
+  overlays for annotation rows through a `CodeViewDelegate`
 - `app`: the Metro graph (`AppGraph`) and `TongsApp`, the shared UI root with
   the navigation shell and list-detail scenes
 - `build-logic`: convention plugins: `tongs.kmp.library` (JVM and Android
@@ -81,8 +92,8 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
 - `desktopApp`: desktop shell; runs the app, and keeps the spike modes behind
   flags
 - `androidApp`: Android shell; `MainActivity` runs the app
-  (`--es thread owner/repo#N` opens a thread), and `PullRequestActivity` keeps
-  the account-free PR spike
+  (`--es thread owner/repo#N` opens a thread, `--es open owner/repo#N` a PR's
+  changes), and `PullRequestActivity` keeps the account-free PR spike
 
 ## Dev tool commands
 
@@ -106,6 +117,16 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   inbox, an open thread, settings, and a PR's changes offscreen with the
   signed-in account's real data (signs in with `gh`'s token if there's no
   account)
+- `./gradlew :desktopApp:run --args="--open=owner/repo#N"`: run the app with
+  that PR's changes open, for the first account. On Android:
+  `adb -s <serial> shell am start -n dev.sargunv.tongs/.android.MainActivity --es open owner/repo#N`
+- `./gradlew :desktopApp:run --args="--changes-screenshots=<dir>"`: drive the
+  changes screen offscreen like a reader (jump to a thread, drag across line
+  numbers, write a comment, start a review) and save screenshots. `--open=` and
+  `--review=` pick PRs. `--api-url=<url>` signs in with that API URL instead of
+  api.github.com; pointed at a proxy that answers mutations itself, `--mutate`
+  also marks a file viewed and submits the review. Without `--api-url` it never
+  mutates. Set `XDG_DATA_HOME` to a scratch dir for these runs
 - `./gradlew :desktopApp:run --args="--thread-screenshots=<dir> owner/repo#N…"`:
   render public threads beside the inbox, and the first with its composer open,
   offscreen with real data, in a throwaway data dir with the token in memory.
@@ -171,8 +192,11 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   them, optimistically; they don't call forge clients directly.
 - Shared UI (theme, rows, app bars, navigation) lives in `core/ui`; features
   don't fork it. Desktop differs through `TongsDensity`, not other components.
-- Room schema changes bump `TongsDatabase`'s version and commit the exported
-  schema in `core/data/schemas`.
+- Room schema changes bump `TongsDatabase`'s version, add an `AutoMigration`
+  where Room can derive one, and commit the exported schema in
+  `core/data/schemas`.
+- Don't mutate anything on real PRs while testing (reviews, comments, viewed
+  state); use a fake server, as `--changes-screenshots --api-url` allows.
 - Tongs is GPL-3.0-or-later (`LICENSE`). Vendored third-party files keep their
   own licenses and notices, e.g. Helix's MPL-2.0 queries in
   `engine-rs/highlight/queries`.

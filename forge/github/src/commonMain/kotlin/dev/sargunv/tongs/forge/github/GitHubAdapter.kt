@@ -63,6 +63,8 @@ private class GitHubClient(http: HttpClient, account: Account, token: String) : 
         )
     }
 
+  override val pullRequestReviews = GitHubPullRequestReviews(http, account.instance, token)
+
   // The HTTP client is the app's, shared by every account.
   override fun close() {}
 }

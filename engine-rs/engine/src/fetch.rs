@@ -601,40 +601,50 @@ mod tests {
         std::fs::write(path, text).unwrap();
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
+    /// A scratch directory, removed on drop.
+    struct TempDir(PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_dir(name: &str) -> TempDir {
         let dir = std::env::temp_dir().join(format!("tongs-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TempDir(dir)
     }
 
     /// A repo with a deep change, a shallow one, an add, and a delete.
-    fn fixture(name: &str) -> (PathBuf, ObjectId, ObjectId) {
-        let repo = temp_dir(&format!("{name}-repo"));
-        git(&repo, &["init", "-q", "-b", "main"]);
+    fn fixture(name: &str) -> (TempDir, ObjectId, ObjectId) {
+        let dir = temp_dir(&format!("{name}-repo"));
+        let repo = &dir.0;
+        git(repo, &["init", "-q", "-b", "main"]);
         for (key, value) in [
             ("user.name", "t"),
             ("user.email", "t@t"),
             ("uploadpack.allowFilter", "true"),
             ("uploadpack.allowAnySHA1InWant", "true"),
         ] {
-            git(&repo, &["config", key, value]);
+            git(repo, &["config", key, value]);
         }
-        write(&repo, "a/b/c/deep.txt", "one\ntwo\nthree\n");
-        write(&repo, "a/same.txt", "same\n");
-        write(&repo, "gone.txt", "bye\n");
-        write(&repo, "top.txt", "top\n");
-        git(&repo, &["add", "-A"]);
-        git(&repo, &["commit", "-q", "-m", "old"]);
-        let old = git(&repo, &["rev-parse", "HEAD"]);
-        write(&repo, "a/b/c/deep.txt", "one\n2\nthree\n");
-        write(&repo, "new/file.txt", "hi\n");
-        write(&repo, "top.txt", "top\nmore\n");
+        write(repo, "a/b/c/deep.txt", "one\ntwo\nthree\n");
+        write(repo, "a/same.txt", "same\n");
+        write(repo, "gone.txt", "bye\n");
+        write(repo, "top.txt", "top\n");
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "old"]);
+        let old = git(repo, &["rev-parse", "HEAD"]);
+        write(repo, "a/b/c/deep.txt", "one\n2\nthree\n");
+        write(repo, "new/file.txt", "hi\n");
+        write(repo, "top.txt", "top\nmore\n");
         std::fs::remove_file(repo.join("gone.txt")).unwrap();
-        git(&repo, &["add", "-A"]);
-        git(&repo, &["commit", "-q", "-m", "new"]);
-        let new = git(&repo, &["rev-parse", "HEAD"]);
-        (repo, old.parse().unwrap(), new.parse().unwrap())
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "new"]);
+        let new = git(repo, &["rev-parse", "HEAD"]);
+        (dir, old.parse().unwrap(), new.parse().unwrap())
     }
 
     /// Plays the server with `git upload-pack`, one request at a time.
@@ -656,7 +666,8 @@ mod tests {
 
     fn load(options: FetchOptions, name: &str) -> (Review, Vec<String>) {
         let (repo, old, new) = fixture(name);
-        let store = Store::open(temp_dir(name)).unwrap();
+        let store_dir = temp_dir(name);
+        let store = Store::open(&store_dir.0).unwrap();
         let mut session = FetchSession::new(store, options);
         session.start_review(old, new).unwrap();
         let mut labels = Vec::new();
@@ -664,7 +675,7 @@ mod tests {
         while let Some(request) = session.poll_request() {
             labels.push(request.label.clone());
             let mut sink = session.response_sink();
-            serve(&repo, &request.body, &mut sink);
+            serve(&repo.0, &request.body, &mut sink);
             session
                 .complete(request.id, &sink.finish().unwrap())
                 .unwrap();
@@ -729,7 +740,8 @@ mod tests {
     #[test]
     fn visible_files_jump_the_queue() {
         let (repo, old, new) = fixture("fetch-visible");
-        let store = Store::open(temp_dir("fetch-visible")).unwrap();
+        let store_dir = temp_dir("fetch-visible");
+        let store = Store::open(&store_dir.0).unwrap();
         let options = FetchOptions {
             whole_trees_from_depth: Some(0),
             ..FetchOptions::default()
@@ -738,7 +750,7 @@ mod tests {
         session.start_review(old, new).unwrap();
         let request = session.poll_request().unwrap();
         let mut sink = session.response_sink();
-        serve(&repo, &request.body, &mut sink);
+        serve(&repo.0, &request.body, &mut sink);
         session
             .complete(request.id, &sink.finish().unwrap())
             .unwrap();

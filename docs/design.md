@@ -380,12 +380,27 @@ and new line numbers, so every adapter can lower it:
   no reasons, and it offers pinning.
 - **Unified across every account and forge.** That's a differentiator no current
   client has.
-- **Triage-first UX:**
-  - Swipe to mark done or read.
+- **Keep GitHub's semantics.** One list, newest update first, with read, unread,
+  and done meaning exactly what the API means. No reclassifying into our own
+  buckets: `reason` says why you're subscribed, and it's sticky. Of 50 recent
+  notifications on the owner's account, 37 had reason `author`, whatever
+  actually happened (a push, CI, a merge).
+- **What's new is added, not inferred.** Each row shows GitHub's reason, plus a
+  second line saying what happened since `last_read_at` ("2 new commits",
+  "checks failed", "new comment from …"). That comes from hydration: GraphQL
+  `timelineItems(since: lastReadAt)` per thread, batched with aliases. A thread
+  you were mentioned in that got a new commit reads "Mentioned" and "1 new
+  commit".
+- **Triage like email:**
+  - Swipe actions are configurable per direction (done, snooze, read or unread,
+    none). The defaults are swipe left for done and right for snooze.
+  - Snooze is local: it hides the thread until a time, then it reappears as
+    unread. GitHub has no snooze API.
   - Filters and saved views are stored locally, since GitHub has no API for
-    them: review requested, mentioned, participating, CI failing, by repo or
-    org.
+    them, and use GitHub's own vocabulary: `reason:`, `is:pr`, `repo:`,
+    `is:unread`, like GitHub's web inbox.
   - Grouping by repo.
+  - Drafts show on their thread's row, like email drafts.
 - Polling happens only while the app is in the foreground and on resume, since
   push notifications are out of scope.
 
@@ -412,7 +427,7 @@ and new line numbers, so every adapter can lower it:
 - Material 3 adaptive list-detail scenes:
   - On phones, panes stack.
   - On tablets and desktop, the inbox list sits beside the open thread.
-  - PR review uses three panes: file tree, diff, and conversation or comments.
+  - PR changes use three panes: file tree, diff, and conversation or comments.
 
 **Screens.**
 
@@ -422,8 +437,16 @@ and new line numbers, so every adapter can lower it:
   - Timeline items include typed events.
   - Reactions, labels, and assignees.
   - Sub-issues and dependencies where the capability allows.
-- **PR review.** One virtual surface over all files.
-  - File tree: fuzzy filter on path, extension, and CODEOWNERS owner. Generated,
+- **PR changes.** Reading a PR's changes and reviewing it are the same screen,
+  opened from a "Changes" entry on the PR, not a "Start review" button: people
+  read diffs without meaning to review. One virtual surface over all files.
+  - Reviewing starts implicitly: the first line comment creates a pending
+    review, and the top bar then shows the pending count and "Finish review".
+    When your review is requested, approve and request changes are always one
+    tap away.
+  - File tree: a real tree, with collapsible directories, single-child chains
+    compacted (`bindings/kotlin/…/ffi`), viewed state rolled up per directory,
+    and a fuzzy filter on path, extension, and CODEOWNERS owner. Generated,
     lockfile, vendored, and rename-only files are grouped and collapsed
     automatically.
   - Viewed state syncs with GitHub's `markFileAsViewed` and is also kept
@@ -431,9 +454,16 @@ and new line numbers, so every adapter can lower it:
     changes.
   - An overview gutter scales each file by its lines changed.
   - A revision picker supports "since last review" and any commit range.
-- **Commenting.**
-  - Long-press or drag across a line range opens the composer. A "suggest
-    change" action prefills the selected lines.
+- **Commenting, modeled on email.**
+  - The thread keeps the timeline. Its end has Reply and Quote actions rather
+    than an always-open text box, and each comment has "Quote reply".
+  - Reply opens a full composer: a full-screen sheet when folded, a docked pane
+    beside the thread when unfolded or on desktop. It has a Markdown toolbar,
+    preview, and attachments, and its send actions are Comment and Close with
+    comment.
+  - Drafts autosave per thread and survive restarts, like email drafts.
+  - In the diff, long-press or drag across a line range opens the same composer.
+    A "suggest change" action prefills the selected lines.
   - The pending review is drafted locally first, so drafts survive offline and
     crashes, then submitted as a batch.
 - **CI.** Rollup on the PR, then runs and jobs, then logs in the code view.

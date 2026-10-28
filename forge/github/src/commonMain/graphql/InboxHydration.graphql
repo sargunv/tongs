@@ -1,0 +1,176 @@
+# One inbox thread's hydration: the subject's state, its latest commit's checks, its review
+# decision, and its timeline since you last read it. Apollo checks it against the schema and
+# generates its parser; GitHubHydrator sends it batched, with the `repository` field repeated under
+# an alias per thread and the variables renamed to match. Keep it free of nested connections inside
+# timeline nodes: each would cost a request per node in GitHub's rate limit.
+query InboxHydration(
+  $owner: String!
+  $name: String!
+  $number: Int!
+  $since: DateTime
+  $timeline: Int!
+) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      ... on PullRequest {
+        prState: state
+        isDraft
+        reviewDecision
+        commits(last: 1) {
+          nodes {
+            commit {
+              committedDate
+              statusCheckRollup {
+                state
+              }
+            }
+          }
+        }
+        prTimeline: timelineItems(
+          since: $since
+          last: $timeline
+          itemTypes: [
+            PULL_REQUEST_COMMIT
+            HEAD_REF_FORCE_PUSHED_EVENT
+            ISSUE_COMMENT
+            PULL_REQUEST_REVIEW
+            REVIEW_REQUESTED_EVENT
+            MERGED_EVENT
+            CLOSED_EVENT
+            REOPENED_EVENT
+            READY_FOR_REVIEW_EVENT
+            CONVERT_TO_DRAFT_EVENT
+            ASSIGNED_EVENT
+          ]
+        ) {
+          nodes {
+            ... on PullRequestCommit {
+              commit {
+                author {
+                  user {
+                    login
+                  }
+                }
+              }
+            }
+            ... on HeadRefForcePushedEvent {
+              actor {
+                login
+              }
+            }
+            ... on IssueComment {
+              author {
+                login
+              }
+            }
+            ... on PullRequestReview {
+              state
+              author {
+                login
+              }
+            }
+            ... on ReviewRequestedEvent {
+              actor {
+                login
+              }
+              requestedReviewer {
+                ... on User {
+                  login
+                }
+                ... on Bot {
+                  login
+                }
+                ... on Team {
+                  combinedSlug
+                }
+              }
+            }
+            ... on MergedEvent {
+              actor {
+                login
+              }
+            }
+            ... on ClosedEvent {
+              actor {
+                login
+              }
+            }
+            ... on ReopenedEvent {
+              actor {
+                login
+              }
+            }
+            ... on ReadyForReviewEvent {
+              actor {
+                login
+              }
+            }
+            ... on ConvertToDraftEvent {
+              actor {
+                login
+              }
+            }
+            ... on AssignedEvent {
+              actor {
+                login
+              }
+              assignee {
+                ... on User {
+                  login
+                }
+                ... on Bot {
+                  login
+                }
+              }
+            }
+          }
+        }
+      }
+      ... on Issue {
+        issueState: state
+        stateReason
+        issueTimeline: timelineItems(
+          since: $since
+          last: $timeline
+          itemTypes: [
+            ISSUE_COMMENT
+            CLOSED_EVENT
+            REOPENED_EVENT
+            ASSIGNED_EVENT
+          ]
+        ) {
+          nodes {
+            ... on IssueComment {
+              author {
+                login
+              }
+            }
+            ... on ClosedEvent {
+              actor {
+                login
+              }
+            }
+            ... on ReopenedEvent {
+              actor {
+                login
+              }
+            }
+            ... on AssignedEvent {
+              actor {
+                login
+              }
+              assignee {
+                ... on User {
+                  login
+                }
+                ... on Bot {
+                  login
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

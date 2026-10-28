@@ -1,18 +1,19 @@
 package dev.sargunv.tongs.forge.github
 
-import dev.sargunv.tongs.core.net.HttpException
 import dev.sargunv.tongs.core.net.Validators
 import dev.sargunv.tongs.core.net.ifChangedSince
 import dev.sargunv.tongs.core.net.isNotModified
 import dev.sargunv.tongs.core.net.nextPageUrl
 import dev.sargunv.tongs.core.net.pollInterval
 import dev.sargunv.tongs.core.net.validators
+import dev.sargunv.tongs.forge.api.ForgeException
 import dev.sargunv.tongs.forge.api.InboxPoll
 import dev.sargunv.tongs.forge.api.InboxSource
 import dev.sargunv.tongs.forge.api.InboxThread
 import dev.sargunv.tongs.forge.api.Instance
 import dev.sargunv.tongs.forge.api.NotificationReason
 import dev.sargunv.tongs.forge.api.RepoRef
+import dev.sargunv.tongs.forge.api.SsoAuthorization
 import dev.sargunv.tongs.forge.api.Subject
 import dev.sargunv.tongs.forge.api.SubjectType
 import io.ktor.client.HttpClient
@@ -21,11 +22,12 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.patch
-import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import kotlin.time.Instant
+import kotlinx.coroutines.CancellationException
+import kotlinx.io.IOException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -34,8 +36,14 @@ import kotlinx.serialization.json.Json
  * GitHub's notifications REST API. Polls with `If-Modified-Since`, so an unchanged inbox costs a
  * 304 and no rate limit.
  *
- * Each poll asks for read and unread threads (`all=true`), newest first, up to [maxPages] pages. If
- * there are more, older threads stay as they were; only a short poll reaches the end of the inbox.
+ * Each poll asks for unread threads, newest first, up to [maxPages] pages. If there are more, older
+ * threads stay as they were; only a short poll reaches the end of the unread threads.
+ *
+ * Not `all=true`: GitHub's list of read threads includes the ones marked done, on the web or with
+ * [markDone], and nothing in it tells them apart, so it can't say what's still in the inbox once
+ * it's read. Only unread is certain: a thread with new activity comes back unread. With a cursor, a
+ * changed inbox answers with only the threads updated since the cursor, as if `since` were set, so
+ * such a poll is never complete.
  */
 class GitHubNotifications(
   private val http: HttpClient,
@@ -46,47 +54,80 @@ class GitHubNotifications(
 ) : InboxSource {
   private val json = Json { ignoreUnknownKeys = true }
 
-  override suspend fun poll(cursor: String?): InboxPoll {
-    var url = "${instance.apiUrl}/notifications?all=true&per_page=$pageSize"
+  /** Organization logins by ID, for SSO notices; they rarely change. */
+  private val organizationLogins = mutableMapOf<Long, String?>()
+
+  override suspend fun poll(cursor: String?): InboxPoll = offline {
+    var url = "${instance.apiUrl}/notifications?per_page=$pageSize"
     val first =
       http.get(url) {
         auth()
         ifChangedSince(cursor?.let { Validators(lastModified = it) })
       }
-    if (first.isNotModified) return InboxPoll.NotModified(first.pollInterval)
-    first.checkSuccess("GET notifications")
+    if (first.isNotModified) return@offline InboxPoll.NotModified(first.pollInterval)
+    first.throwIfFailed("GET notifications")
     val threads = json.decodeFromString<List<NotificationDto>>(first.bodyAsText()).map(::toThread)
     val all = threads.toMutableList()
+    val hidden = mutableSetOf<Long>()
+    (parseSsoHeader(first.headers["X-GitHub-SSO"]) as? SsoHeader.PartialResults)?.let {
+      hidden += it.organizationIds
+    }
     var next = first.nextPageUrl
     var pages = 1
     while (next != null && pages < maxPages) {
       url = next
       val response = http.get(url) { auth() }
-      response.checkSuccess("GET notifications page ${pages + 1}")
+      response.throwIfFailed("GET notifications page ${pages + 1}")
       all += json.decodeFromString<List<NotificationDto>>(response.bodyAsText()).map(::toThread)
+      (parseSsoHeader(response.headers["X-GitHub-SSO"]) as? SsoHeader.PartialResults)?.let {
+        hidden += it.organizationIds
+      }
       next = response.nextPageUrl
       pages++
     }
-    return InboxPoll.Changed(
+    InboxPoll.Changed(
       threads = all,
-      complete = next == null,
+      // With a cursor, GitHub answers only with threads updated since it, so the answer covers
+      // what it holds, not the whole inbox.
+      complete = cursor == null && next == null,
       cursor = first.validators.lastModified,
       pollInterval = first.pollInterval,
+      ssoRequired = hidden.map { ssoAuthorization(it) },
     )
   }
 
-  override suspend fun markRead(threadId: String) {
+  override suspend fun markRead(threadId: String) = offline {
     // 205 Reset Content.
     http
       .patch("${instance.apiUrl}/notifications/threads/$threadId") { auth() }
-      .checkSuccess("PATCH thread $threadId")
+      .throwIfFailed("PATCH thread $threadId")
   }
 
-  override suspend fun markDone(threadId: String) {
+  override suspend fun markDone(threadId: String) = offline {
     // 204 No Content.
     http
       .delete("${instance.apiUrl}/notifications/threads/$threadId") { auth() }
-      .checkSuccess("DELETE thread $threadId")
+      .throwIfFailed("DELETE thread $threadId")
+  }
+
+  /**
+   * Where to authorize the token for an organization that hid threads. The header gives only its
+   * ID, so look up its login once; the org's SSO page starts the authorization.
+   */
+  private suspend fun ssoAuthorization(organizationId: Long): SsoAuthorization {
+    val login =
+      organizationLogins.getOrPut(organizationId) {
+        runCatching {
+          val response = http.get("${instance.apiUrl}/organizations/$organizationId") { auth() }
+          if (!response.status.isSuccess()) null
+          else json.decodeFromString<OwnerDto>(response.bodyAsText()).login
+        }
+          .getOrNull()
+      }
+    val url =
+      if (login != null) "${instance.webUrl}/orgs/$login/sso"
+      else "${instance.webUrl}/settings/connections/applications"
+    return SsoAuthorization(login, url)
   }
 
   private fun HttpRequestBuilder.auth() {
@@ -135,9 +176,15 @@ internal fun webUrl(repoUrl: String, type: SubjectType, apiUrl: String?, number:
     is SubjectType.Other -> null
   } ?: repoUrl
 
-private suspend fun HttpResponse.checkSuccess(what: String) {
-  if (!status.isSuccess()) throw HttpException(status, what, bodyAsText())
-}
+/** Runs [block], reporting a network failure as [ForgeException.Offline]. */
+internal suspend inline fun <T> offline(block: () -> T): T =
+  try {
+    block()
+  } catch (e: CancellationException) {
+    throw e
+  } catch (e: IOException) {
+    throw ForgeException.Offline(e)
+  }
 
 @Serializable
 private class NotificationDto(

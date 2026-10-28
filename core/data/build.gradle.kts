@@ -16,6 +16,7 @@ kotlin {
       implementation(libs.sqlite.bundled)
       api(libs.datastore.preferences.core)
       implementation(libs.okio)
+      implementation(libs.kotlinx.serialization.json)
     }
     jvmMain.dependencies { implementation(libs.java.keyring) }
     commonTest.dependencies { implementation(libs.turbine) }

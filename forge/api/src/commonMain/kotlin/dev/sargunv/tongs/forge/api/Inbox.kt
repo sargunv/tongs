@@ -132,22 +132,32 @@ sealed interface InboxPoll {
   data class NotModified(override val pollInterval: Duration?) : InboxPoll
 
   data class Changed(
-    /** Threads, newest update first. */
+    /**
+     * Unread threads, newest update first. Only unread: GitHub can't list what's still in the inbox
+     * once it's read, since its read threads include those marked done.
+     */
     val threads: List<InboxThread>,
     /**
-     * True if [threads] is the whole inbox. Otherwise it covers every thread updated at or after
-     * the oldest one in it, and older threads weren't fetched.
+     * True if [threads] are all the unread threads. Otherwise they cover every thread updated at or
+     * after the oldest one in it, and older threads weren't fetched.
      */
     val complete: Boolean,
     /** Pass to the next poll to ask only for changes. Opaque; GitHub's is `Last-Modified`. */
     val cursor: String?,
     override val pollInterval: Duration?,
+    /**
+     * Organizations whose threads the forge left out because the token isn't authorized for their
+     * SAML single sign-on. Threads there aren't done, just hidden, so a poll with any of these
+     * doesn't count as covering them.
+     */
+    val ssoRequired: List<SsoAuthorization> = emptyList(),
   ) : InboxPoll
 }
 
 /**
  * A forge's notification inbox for one account. Threads missing from a [InboxPoll.Changed] that it
- * covers were marked done elsewhere.
+ * covers aren't unread anymore: read or marked done elsewhere, which the forge may not tell apart.
+ * Failures throw a [ForgeException] where the cause is known.
  */
 interface InboxSource {
   /** Fetches the inbox, or reports it unchanged since [cursor]. */
@@ -161,18 +171,35 @@ interface InboxSource {
 
 /**
  * Adds what each row needs beyond the notification itself: what happened since you last read it,
- * the subject's state, checks, and review state. The inbox calls it with the threads that changed
- * in a poll and stores what it returns. For GitHub, that's GraphQL `nodes(ids:)` and
- * `timelineItems(since: lastReadAt)`, batched with aliases. Not built yet.
+ * the subject's state, checks, and review state. The inbox calls it with threads whose update it
+ * hasn't hydrated yet and stores what it returns. For GitHub, that's one GraphQL query per 50
+ * threads, with `timelineItems(since: lastReadAt)` per thread under an alias.
  */
 interface InboxHydrator {
-  suspend fun hydrate(threads: List<InboxThread>): List<ThreadHydration>
+  /**
+   * Hydrates [threads]. Threads the forge can't describe (deleted, or behind SSO) come back with
+   * nothing set, so they aren't asked about again until they change.
+   */
+  suspend fun hydrate(threads: List<InboxThread>): Hydration
 }
+
+data class Hydration(
+  val threads: List<ThreadHydration>,
+  /** What it cost in the forge's rate limit units, if it says: GitHub's GraphQL points. */
+  val cost: Int? = null,
+)
 
 data class ThreadHydration(
   val threadId: String,
-  /** The subject's state, raw from the forge: `OPEN`, `MERGED`, and so on. */
-  val subjectState: String?,
-  /** What happened since `lastReadAt`, as one line: "2 new commits", "checks failed". */
-  val whatsNew: String?,
+  /** The subject's state, raw from the forge: `OPEN`, `CLOSED`, or `MERGED` on GitHub. */
+  val subjectState: String? = null,
+  /** Why an issue was closed, raw: `COMPLETED`, `NOT_PLANNED`, `DUPLICATE` on GitHub. */
+  val stateReason: String? = null,
+  val isDraft: Boolean = false,
+  /** The latest commit's combined checks, raw: `SUCCESS`, `FAILURE`, `PENDING`, and so on. */
+  val checks: String? = null,
+  /** A PR's review decision, raw: `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`. */
+  val reviewDecision: String? = null,
+  /** What happened since `lastReadAt`, as one line: "2 new commits, checks failed". */
+  val whatsNew: String? = null,
 )

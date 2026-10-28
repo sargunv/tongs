@@ -1,5 +1,6 @@
 package dev.sargunv.tongs.core.data
 
+import androidx.room3.AutoMigration
 import androidx.room3.ConstructedBy
 import androidx.room3.Database
 import androidx.room3.RoomDatabase
@@ -13,14 +14,23 @@ import kotlinx.coroutines.IO
  * rather than the platform's, so both platforms run the same version.
  */
 @Database(
-  entities = [AccountEntity::class, InboxThreadEntity::class, InboxSyncEntity::class],
-  version = 1,
+  entities =
+    [
+      AccountEntity::class,
+      InboxThreadEntity::class,
+      InboxSyncEntity::class,
+      InboxViewEntity::class,
+    ],
+  version = 2,
+  autoMigrations = [AutoMigration(from = 1, to = 2)],
 )
 @ConstructedBy(TongsDatabaseConstructor::class)
 abstract class TongsDatabase : RoomDatabase() {
   abstract fun accounts(): AccountDao
 
   abstract fun inbox(): InboxDao
+
+  abstract fun inboxViews(): InboxViewDao
 }
 
 // Room generates the actual objects.

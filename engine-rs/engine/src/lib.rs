@@ -2,5 +2,6 @@
 
 pub mod file_diff;
 pub mod protocol;
+pub mod review;
 pub mod store;
 pub mod tree_walk;

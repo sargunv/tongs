@@ -12,6 +12,10 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   without HTTP, object store, tree walk, file diff
 - `engine-rs/spike`: CLI that reviews a GitHub PR from git objects alone and
   times each stage
+- `engine-rs/jni`: JNI bindings (`libtongs_jni`) for the Kotlin `engine` module
+- `engine`: Kotlin facade over the engine (`Review`, row model types)
+- `codeview`: Compose Multiplatform canvas renderer for code and diffs
+- `desktopApp`: desktop shell; currently the renderer spike
 
 ## Dev tool commands
 
@@ -19,6 +23,10 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
 - `mise run check` / `mise run fix`: run every linter and formatter through hk
 - `cargo test`: engine unit tests
 - `cargo run --release -p tongs-spike -- maplibre/maplibre-native-ffi 760`:
-  fetch and diff a 576k-line PR (needs `gh auth login` or `GH_TOKEN`)
+  fetch and diff a 576k-line PR (needs `gh auth login` or `GH_TOKEN`); fills
+  `/tmp/tongs-spike-store`
+- `./gradlew :desktopApp:run`: open that PR in the renderer (builds the JNI
+  library first). Add `--args="--bench"` to print frame timings, or
+  `--args="--screenshot=out.png@<row>"` to render offscreen
 
 ## Project invariants

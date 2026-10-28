@@ -1,0 +1,14 @@
+[package]
+name = "tongs-jni"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1.0.104"
+jni = "0.22.4"
+tongs-engine = { version = "0.1.0", path = "../engine" }

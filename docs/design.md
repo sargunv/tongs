@@ -507,15 +507,44 @@ Findings:
   - For small repos, fetch every tree up front with `blob:none` at depth 1.
   - Start fetching blobs for each directory level as soon as it resolves.
 - **Line counts:** the total number of changed lines matches GitHub's, but our
-  per-file counts sometimes differ. The cause is alignment: GitHub uses git's
-  Myers diff with its heuristics, and imara-diff's histogram and Myers don't
-  reproduce it exactly. Comment anchors use file line numbers, so this is
-  cosmetic. To try: `gix-imara-diff`, which claims to match git exactly.
+  per-file counts sometimes differ, because GitHub aligns hunks with git's Myers
+  diff and we use histogram. Matching GitHub is a non-goal. Our diffs only need
+  to read well, and reading better than GitHub's is a win. Candidates:
+  - slider and indent heuristics
+  - moved-block detection
+  - word-level refinement
+
 - **Still missing:**
   - Rename detection. GitHub shows 5 renames here, and we count each as a delete
     plus an add.
   - `.gitattributes` handling, including nested files such as
     `bindings/.gitattributes`.
+
+### 2026-10-28: canvas renderer, desktop
+
+The `desktopApp` spike opens the same PR from the local store through JNI and
+draws it with `codeview`. Measured on a 120 Hz display with OpenGL, at
+1400×1000:
+
+- **Opening the review** (tree walk, diff, and row model for all 602,759 rows):
+  70 ms. The JVM heap stays at 6 MiB, because rows live in native memory.
+- **Fling** (200 px/frame for 3,000 frames): draw CPU p50 0.09 ms, p99 0.27 ms.
+  Frames are locked to vsync at 8.33 ms.
+- **Scrub** (the whole review in 600 frames, so every row is new every frame):
+  draw CPU p50 0.19 ms, p99 0.42 ms. Fetching rows over JNI takes p50 0.02 ms.
+- **What made the difference:** the first version shaped each line with Skia's
+  `TextLine` (HarfBuzz), which cost 2–3 ms per line and 42–130 ms per frame. The
+  monospace fast path looks up glyphs directly and places them on a fixed column
+  grid in a `TextBlob`. Lines with glyphs the font lacks still go through
+  `TextLine` for font fallback. Android needs the same trick.
+
+Not covered yet:
+
+- syntax highlighting
+- fetching and progressive loading inside the app
+- wide (CJK) characters on the column grid
+- selection
+- Android
 
 ## Plan
 

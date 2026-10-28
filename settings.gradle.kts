@@ -15,4 +15,4 @@ dependencyResolutionManagement {
   }
 }
 
-include(":engine", ":codeview", ":desktopApp", ":androidApp")
+include(":engine", ":codeview", ":forge:github", ":desktopApp", ":androidApp")

@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
             unsupported += 1;
             continue;
         };
-        for (blob, text) in [(file.old_blob, &file.old), (file.new_blob, &file.new)] {
+        for (blob, text) in [(file.old_id, &file.old), (file.new_id, &file.new)] {
             if let Some(blob) = blob
                 && !text.is_binary()
                 && seen.insert(blob)

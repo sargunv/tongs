@@ -13,6 +13,7 @@ import dev.sargunv.tongs.codeview.CodeViewState
 import dev.sargunv.tongs.codeview.rememberCodeViewState
 import dev.sargunv.tongs.engine.Highlighter
 import dev.sargunv.tongs.engine.Review
+import dev.sargunv.tongs.forge.github.PullRequestRef
 import java.io.File
 import kotlin.time.TimeSource
 import kotlinx.coroutines.delay
@@ -22,11 +23,28 @@ import org.jetbrains.skia.EncodedImageFormat
  * Spike: opens a review from a pre-filled object store (see `tongs-spike`) and renders it.
  *
  * Usage: `[storeDir oldCommit newCommit] [--bench] [--screenshot=out.png@row] [--no-highlight]`.
- * Defaults to maplibre/maplibre-native-ffi#760.
+ * Defaults to maplibre/maplibre-native-ffi#760. Or `--pr owner/repo#number [--store=dir]
+ * [--exit-when-loaded] [--jump=fraction] [--no-highlight]` to fetch a PR in-app; see
+ * [runPullRequest].
  */
 fun main(args: Array<String>) {
-  val bench = "--bench" in args
   val highlighter = if ("--no-highlight" in args) null else Highlighter()
+  val pr = args.indexOf("--pr").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
+  if (pr != null) {
+    val ref = requireNotNull(PullRequestRef.parse(pr)) { "expected owner/repo#number: $pr" }
+    val store = args.firstNotNullOfOrNull { it.removePrefix("--store=").takeIf { s -> s != it } }
+    val jump = args.firstNotNullOfOrNull { it.removePrefix("--jump=").takeIf { s -> s != it } }
+    runPullRequest(
+      ref,
+      store?.let(::File),
+      exitWhenLoaded = "--exit-when-loaded" in args,
+      jumpTo = jump?.toDouble(),
+      highlighter = highlighter,
+    )
+    highlighter?.close()
+    return
+  }
+  val bench = "--bench" in args
   val screenshot = args.firstNotNullOfOrNull {
     it.removePrefix("--screenshot=").takeIf { s -> s != it }
   }

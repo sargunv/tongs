@@ -56,9 +56,15 @@ impl Client {
         store: &Store,
         wants: Vec<ObjectId>,
         filter: Option<Filter>,
+        deepen: Option<u32>,
     ) -> Result<(u32, u64)> {
         let url = format!("https://github.com/{}.git/git-upload-pack", self.repo);
-        let body = FetchRequest { wants, filter }.body();
+        let body = FetchRequest {
+            wants,
+            filter,
+            deepen,
+        }
+        .body();
         let mut request = self
             .agent
             .post(&url)
@@ -140,7 +146,7 @@ fn main() -> Result<()> {
         .filter(|id| !store.contains(id))
         .collect();
     if !commits.is_empty() {
-        client.fetch(&store, commits, Some(Filter::TreeZero))?;
+        client.fetch(&store, commits, Some(Filter::TreeZero), Some(1))?;
     }
     let mut walk = TreeWalk::new(store.commit_tree(&merge_base)?, store.commit_tree(&head)?);
     stage("commits", t);
@@ -151,7 +157,7 @@ fn main() -> Result<()> {
         let missing = walk.missing(&store);
         if !missing.is_empty() {
             rounds += 1;
-            let (objects, bytes) = client.fetch(&store, missing, Some(Filter::TreeZero))?;
+            let (objects, bytes) = client.fetch(&store, missing, Some(Filter::TreeZero), None)?;
             trees += objects;
             tree_bytes += bytes;
         }
@@ -189,7 +195,8 @@ fn main() -> Result<()> {
                             return Ok(());
                         };
                         let started = Instant::now();
-                        let (n, b) = client.fetch(&store, batch.clone(), Some(Filter::BlobNone))?;
+                        let (n, b) =
+                            client.fetch(&store, batch.clone(), Some(Filter::BlobNone), None)?;
                         objects.fetch_add(n, Ordering::Relaxed);
                         bytes.fetch_add(b, Ordering::Relaxed);
                         let mut slowest = slowest.lock().unwrap();

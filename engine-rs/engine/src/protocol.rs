@@ -27,10 +27,13 @@ impl Filter {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FetchRequest {
     pub wants: Vec<ObjectId>,
     pub filter: Option<Filter>,
+    /// Shallow depth for commit wants. Without it, wanting a commit sends its
+    /// whole history, whatever the filter: 1.1M objects for nixpkgs.
+    pub deepen: Option<u32>,
 }
 
 impl FetchRequest {
@@ -49,6 +52,9 @@ impl FetchRequest {
         pkt_line(&mut out, b"no-progress\n");
         if let Some(filter) = self.filter {
             pkt_line(&mut out, format!("filter {}\n", filter.spec()).as_bytes());
+        }
+        if let Some(depth) = self.deepen {
+            pkt_line(&mut out, format!("deepen {depth}\n").as_bytes());
         }
         for want in &self.wants {
             pkt_line(&mut out, format!("want {want}\n").as_bytes());

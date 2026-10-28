@@ -11,6 +11,8 @@ kotlin { jvmToolchain(25) }
 dependencies {
   implementation(project(":engine"))
   implementation(project(":codeview"))
+  implementation(project(":forge:github"))
+  implementation(libs.ktor.client.okhttp)
   implementation(compose.desktop.currentOs)
   implementation(libs.kotlinx.coroutines.swing)
 }

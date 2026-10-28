@@ -130,13 +130,27 @@ The same engine serves PR review, commit view, compare, and the file browser.
    - Otherwise the engine computes it by fetching commits only (`filter tree:0`,
      deepening until it finds a common ancestor). Diffs are three-dot, the same
      as on the forge.
+   - The fetch doesn't wait for the merge base. It starts from the PR's base,
+     and the review shows as soon as the fetched history proves the base is an
+     ancestor of the head, which makes it the merge base. Otherwise it waits for
+     the forge and restarts from the real merge base, reusing every object
+     already fetched.
+   - Every commit want carries `deepen 1`. Without it, servers send the whole
+     history, whatever the filter.
 2. **Trees.**
-   - Fetch the root trees of the merge base and the head with `filter tree:0`.
-   - Then walk only the subtrees whose OIDs differ, one batched round trip per
-     directory level.
-   - The cost scales with the size of the change, not the size of the repo.
-   - Live tests confirmed github.com serves single trees and blobs by OID with
-     protocol v2 filters. Codeberg supports `blob:none` and `refs/pull/N/head`.
+   - Small repos, under about 2 GB by the forge's reported size, fetch every
+     tree with the commits in one round trip (`deepen 1` and `blob:none`). The
+     whole tree set of a revision is 145 KiB for maplibre-native-ffi and 2 MiB
+     for rust-lang/rust.
+   - Larger repos fetch the root trees of the merge base and the head with
+     `filter tree:0`, then walk only the subtrees whose OIDs differ, one batched
+     round trip per directory level. The cost scales with the size of the
+     change, not the size of the repo.
+   - github.com rejects `tree:<n>` above 0 and `combine:` filters, so a walk
+     can't fetch several levels per round trip there. Forgejo accepts both, so a
+     Forgejo walk could.
+   - Live tests confirmed github.com and codeberg.org serve single trees and
+     blobs by OID with protocol v2 filters.
 3. **File list, within seconds and uncapped.**
    - Tree diff and exact-rename detection on OIDs come first. Content-similarity
      renames are found lazily afterwards.
@@ -149,9 +163,11 @@ The same engine serves PR review, commit view, compare, and the file browser.
    - CODEOWNERS ownership is matched here too. These are the first few small
      blob fetches.
 4. **Blobs, on demand.**
-   - A priority queue is ordered by distance from the viewport and scroll
-     direction.
-   - It sends requests of about 50–200 wants, with no `have` lines.
+   - Files on screen and in the next two screens go first, in a batch of their
+     own. Everything else follows in path order.
+   - Requests carry 32 wants at first and double up to 256, so the first diffs
+     don't wait on a big batch. Up to six run at once, plus one for visible
+     files. There are no `have` lines.
    - Fetched blobs are stored by OID, permanently valid, and shared by every PR,
      commit, and file view in that repo.
    - Files above a size threshold show "Load diff".
@@ -564,7 +580,6 @@ draws it with `codeview`. Measured on a 120 Hz display with OpenGL, at
 Not covered yet:
 
 - syntax highlighting
-- fetching and progressive loading inside the app
 - wide (CJK) characters on the column grid
 - selection
 - Android
@@ -727,6 +742,127 @@ Not covered yet:
 - tabs and wide characters (the same gap as desktop)
 - touch input beyond a hand check: a swipe flings vertically and scrolls
   horizontally
+
+### 2026-10-28: in-app fetch, progressive review
+
+`./gradlew :desktopApp:run --args="--pr owner/repo#N"` now opens any GitHub PR
+by fetching it in the app. Kotlin does the HTTP with Ktor and OkHttp. The engine
+plans each request, and the response body streams into it as it arrives, so a
+pack is never buffered whole. Each response produces a new immutable `Review`
+snapshot. Files are shared between snapshots through `Arc`, so a snapshot costs
+one prefix-sum array. `CodeViewState.swapRows` swaps it in and keeps the top row
+on the same file and row.
+
+Measured on maplibre/maplibre-native-ffi#760 with `--exit-when-loaded`, three
+runs each, on home internet. Two other agents were building on the machine at
+the time, so the numbers are noisy. Times run from app start, after JVM startup
+and the `gh auth token` call, to the frame that shows the result. Metadata alone
+took 0.55–0.77 s.
+
+| Run                        | Headers on screen | First diff | Everything | Git requests      |
+| -------------------------- | ----------------- | ---------- | ---------- | ----------------- |
+| Cold store                 | 0.90–1.11 s       | 1.03–1.22  | 1.50–2.01  | 14 (5 MiB)        |
+| Warm store                 | 0.81–0.88 s       | same       | same       | 0                 |
+| CLI, cold, same hour       | none until done   |            | 5.4–6.1 s  | 19 (12 for trees) |
+| CLI, cold, earlier (above) |                   |            | 5.8 s      |                   |
+
+The cold app makes 14 git requests: one for both commits with every tree, then
+13 blob batches. It also sends a capability probe that warms the connection, and
+two REST calls. On a warm store, the time is the PR metadata call, plus 115–125
+ms to walk, diff, and draw all 602,759 rows. The app would read that metadata
+from its database.
+
+What made the difference:
+
+- **Whole trees with the commits.** Most of the CLI's 2.8–3.2 s tree walk was 12
+  round trips for 135 KiB. One `deepen 1` and `blob:none` request returns all
+  864 objects of both revisions in 0.25 s. Whole trees grow with the repo, and
+  the forge's repo size is the cheapest predictor of what they cost:
+
+  | Repo                | Repo size | All trees, one revision | Time   |
+  | ------------------- | --------- | ----------------------- | ------ |
+  | maplibre-native-ffi | 20 MB     | 145 KiB, 864 objects    | 0.27 s |
+  | rust-lang/rust      | 1.0 GB    | 2.1 MiB, 4,650 objects  | 0.6 s  |
+  | microsoft/vscode    | 1.6 GB    | under 1 MiB             | 0.4 s  |
+  | NixOS/nixpkgs       | 3.5 GB    | 3.5 MiB, 38,899 objects | 0.9 s  |
+  | torvalds/linux      | 6.4 GB    | 3.0 MiB, 6,340 objects  | 1.6 s  |
+  | chromium/chromium   | 68 GB     | 17 MiB, 45,687 objects  | 37 s   |
+
+  Above 2 GB the app walks instead. On nixpkgs#580183, a one-line change 5
+  directories deep, the walk takes 5 round trips of about 170 ms each and
+  fetches 14 objects.
+
+- **Not waiting for the merge base.** The fetch starts from the PR's base while
+  GitHub's compare API runs, and the review shows once the head's parents prove
+  the base is its ancestor. On microsoft/vscode#344790 the base had moved on, so
+  the review restarted from the real merge base for one extra request.
+- **Warming the git connection** during the metadata call took the first fetch
+  from about 0.5 s to 0.25 s.
+- **Small first batches.** Batches start at 32 wants, so the top file's diff
+  lands about 120 ms after the headers. When the view jumps 60% of the way into
+  the review, the visible files' batch goes ahead of the queue, and they show
+  375 ms later.
+
+Findings:
+
+- **A latent bug from the CLI spike:** wanting a commit with `tree:0` but
+  without `deepen` sends its whole history. That's harmless on
+  maplibre-native-ffi, but on nixpkgs it meant 1.1M objects and 500 MB, taking
+  16 s. Commit wants now always carry `deepen 1`.
+- **github.com allows only `tree:0`.** It answers `tree:1` with "tree filter
+  allows max depth 0" and `combine:` with "filter 'combine' not supported".
+  Batching sibling subtrees is already what the per-level walk does.
+- **Codeberg (Forgejo 16) supports everything the engine needs.** Anonymous
+  protocol v2 on forgejo/forgejo advertises
+  `fetch=shallow wait-for-done filter`. It serves:
+  - commits by OID with `deepen 1`, including a PR head that lives in a fork
+    (through `refs/pull/N/head`)
+  - single trees by OID with `tree:0`
+  - several blobs by OID with `blob:none`
+  - all trees in one request: 1,711 objects, 340 KiB, 1.3 s
+  - `tree:1` and `combine:tree:2+blob:none`, which github.com rejects
+
+  Each probe ran on a new connection and took 0.55–0.65 s there, against
+  0.2–0.55 s on github.com. Forgejo's pulls API also returns `merge_base`. One
+  API quirk: `/git/commits/{sha}` reports the commit's own SHA as
+  `commit.tree.sha`.
+
+- **Interop:** the session went through jni-rs as well, about 20 calls of
+  handles and strings. UniFFI wasn't needed for it.
+
+Storage: each repo gets its own object store at
+`<cache>/tongs/<host>/<owner>/<repo>/objects` (`$XDG_CACHE_HOME` on desktop).
+Each response adds a pack, so the store only grows: a cold #760 leaves 14 packs.
+Still to do: merging small packs, and LRU eviction by bytes, with the repo as
+the unit.
+
+Not covered yet:
+
+- Forgejo in the app
+- Blob batches sized by bytes; all blob sizes are unknown up front
+- `have` lines, so small repos on a warm store don't fetch every tree again
+- Estimating row counts for files still loading; the scrollbar grows as they
+  load
+- Cancelling requests for files that scrolled away
+
+### 2026-10-28: the three spikes merged
+
+Highlighting, Android, and in-app fetch merged into `main`. Fetched snapshots
+carry the shared highlighter, so a PR opened with `--pr` is highlighted as it
+loads. Rerun on the desktop with no agents building (host load average about 11
+from other work):
+
+- **Cold `--pr` load of #760**, from app start: fully loaded and on screen in
+  2.1–2.8 s over 14 requests (5 MiB of packs).
+- **`--bench` on the stored review, with highlighting:**
+
+  | Pass  | Draw CPU p50 | p99     | Frame p99 | Rows drawn plain |
+  | ----- | ------------ | ------- | --------- | ---------------- |
+  | Fling | 0.12 ms      | 0.45 ms | 9.25 ms   | 0.6% (cold)      |
+  | Scrub | 0.21 ms      | 0.52 ms | 9.30 ms   | 89% (cold)       |
+
+  Warm passes are the same within noise. The review opens in 77 ms, and the JVM
+  heap stays at 6 MiB.
 
 ## Plan
 

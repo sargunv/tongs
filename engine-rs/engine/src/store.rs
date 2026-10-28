@@ -65,6 +65,11 @@ impl Store {
         Ok(self.odb.find_commit(id, &mut buf)?.tree())
     }
 
+    pub fn commit_parents(&self, id: &ObjectId) -> Result<Vec<ObjectId>> {
+        let mut buf = Vec::new();
+        Ok(self.odb.find_commit(id, &mut buf)?.parents().collect())
+    }
+
     pub fn blob(&self, id: &ObjectId) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
         let data = self

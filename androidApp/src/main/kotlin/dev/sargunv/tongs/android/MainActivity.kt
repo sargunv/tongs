@@ -19,7 +19,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.sp
@@ -92,7 +91,7 @@ class MainActivity : ComponentActivity() {
           ?.onSuccess {
             val state = rememberCodeViewState(it)
             // CodeView draws a partial row past its bottom edge; keep it off the nav bar.
-            CodeView(state, Modifier.clipToBounds(), colors)
+            CodeView(state, colors = colors)
             LaunchedEffect(state) {
               state.scrollToRow(startRow)
               if (bench) {

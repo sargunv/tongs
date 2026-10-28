@@ -42,17 +42,25 @@ fn main() -> anyhow::Result<()> {
     };
     let review = Review::open(&Store::open(store)?, &old.parse()?, &new.parse()?)?;
 
-    let started = Instant::now();
-    let failed: Vec<_> = Lang::all().filter(|lang| !lang.prepare()).collect();
+    // Configs build lazily in the app; time each one here.
+    let mut compiles: Vec<_> = Lang::all()
+        .map(|lang| {
+            let t = Instant::now();
+            assert!(lang.prepare(), "{} queries failed to compile", lang.name());
+            (t.elapsed(), lang.name())
+        })
+        .collect();
+    compiles.sort_unstable_by_key(|(time, _)| std::cmp::Reverse(*time));
+    let total: Duration = compiles.iter().map(|(time, _)| *time).sum();
+    let slowest: Vec<_> = compiles[..3]
+        .iter()
+        .map(|(time, name)| format!("{name} {:.0} ms", time.as_secs_f64() * 1e3))
+        .collect();
     println!(
-        "compile queries for {} languages: {:.0} ms{}",
-        Lang::all().count(),
-        started.elapsed().as_secs_f64() * 1e3,
-        if failed.is_empty() {
-            String::new()
-        } else {
-            format!(", failed: {failed:?}")
-        }
+        "compile queries for {} languages: {:.0} ms; slowest {}",
+        compiles.len(),
+        total.as_secs_f64() * 1e3,
+        slowest.join(", ")
     );
 
     // Each distinct blob once, as the cache would see it.

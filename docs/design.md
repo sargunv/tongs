@@ -108,10 +108,11 @@ chunks. It never opens a socket.
   - text slab offset and length
   - token-run offset and count
 
-  It follows them with packed token runs (`u32 start | u16 len | u16 styleId`)
-  and an epoch number that tells Kotlin when highlighting has replaced plain
-  text. UniFFI's JNA bindings cost about 4 µs per call, which is too slow per
-  frame.
+  It follows them with packed token runs (`u32 utf16Column << 8 | styleId`, each
+  running to the next) and a flag for rows whose highlights are still pending. A
+  highlighter epoch, which Kotlin waits on from a background thread, tells it
+  when to refetch those rows. UniFFI's JNA bindings cost about 4 µs per call,
+  which is too slow per frame.
 
 - **Build.** cargo-ndk and `uniffi-bindgen` run through a small Gradle
   convention plugin. Gobley would be nicer, but it hasn't released in a year and
@@ -164,11 +165,15 @@ The same engine serves PR review, commit view, compare, and the file browser.
      need invalidating.
 6. **Highlight, in the background.**
    - Plain text renders first. Token runs arrive later and the epoch bumps.
-   - The whole old and new files are parsed, because hunk-only lexing gets
-     multi-line strings and comments wrong. Queries then run only over the
-     requested row ranges.
-   - Size and line-length caps apply, and generated or minified files are
-     skipped.
+   - The whole old and new files are parsed and queried, because hunk-only
+     lexing gets multi-line strings and comments wrong. Spans are kept per line
+     and cached by blob OID, outside any one review, so snapshots and other
+     views of the same blob share them.
+   - Only files with rows near the viewport are highlighted, newest request
+     first. Files over 1 MiB, minified files, non-UTF-8 files, and parses over 2
+     seconds stay plain. Generated files aren't skipped: the file tree collapses
+     them, so they're never requested unless someone opens them, and then
+     they're worth coloring.
 7. **Row model.**
    - Per file, the engine keeps row counts and prefix sums covering headers,
      hunk separators, context, add/delete pairs, collapsed regions, and
@@ -203,8 +208,9 @@ too, through an ANSI-to-token-run adapter, since logs are also huge.
 
 **Drawing.**
 
-- Visible rows are drawn directly on a Compose `Canvas` from a token-run cache
-  keyed by `(row identity, epoch)`.
+- Visible rows are drawn directly on a Compose `Canvas`, one `drawText` per
+  token run at its column. Rows waiting on highlights are refetched when the
+  highlighter's epoch bumps.
 - Composables are used only for interactive overlays: comment threads, the
   composer, and selection handles.
 - Below the shared Compose drawing API, each platform has a small
@@ -546,6 +552,91 @@ Not covered yet:
 - selection
 - Android
 
+### 2026-10-28: syntax highlighting
+
+`tongs-highlight` highlights each side's whole file with tree-house and Helix's
+queries, on background threads, into per-line spans cached by blob. `fillRows`
+projects ready spans onto rows. Measured on a 32-thread Ryzen AI Max+ 395 while
+two other agents were building, so timings are noisy; ranges are across runs.
+
+**Languages.** 22 languages from 21 grammars statically linked from crates.io:
+Bash, C, C++, C#, CMake, Dart, Go, Java, JavaScript, JSX, JSON, Kotlin, Markdown
+(with inline), Python, Rust, Swift, TOML, TypeScript, TSX, YAML, and Zig. That
+covers 2,144 of #760's 2,190 files. All the grammars are MIT. Most crates.io
+versions match Helix's pins, with three exceptions:
+
+- Swift is pinned to 0.7.2.
+- C++ is a git dependency at Helix's revision.
+- Dart uses `tree-sitter-dart-orchard` with a three-line patch to Helix's query,
+  because the pinned grammar's crate brings its own tree-sitter runtime.
+
+A unit test checks that every query compiles.
+
+**Throughput.** Measured with the `highlight_review` example over every distinct
+blob in #760: 2,570 blobs, 24 MiB, 706k lines.
+
+| Measure                      | Result                                               |
+| ---------------------------- | ---------------------------------------------------- |
+| One core                     | 2.1–3.6 MB/s, 7–12 s for all of #760                 |
+| All 32 threads, wall time    | 0.39–0.83 s, bound by the largest file               |
+| Slowest file                 | 0.13–0.25 s alone (422 KiB of Go)                    |
+| Parsing vs. queries          | Parsing with injections and locals is about 70%      |
+| Query compile, all languages | 0.6–1.3 s; lazy per language, Swift slowest at 0.1 s |
+| Spans for all of #760        | 18.9 MiB: 4.2M spans, 28 bytes per source line       |
+
+**Rendering.** `--bench` at 1400×1000 on a 120 Hz display. Cold runs start with
+an empty cache, and warm runs repeat the same path. Two runs each:
+
+| Pass         | Draw CPU p50 | p99          | Rows drawn plain |
+| ------------ | ------------ | ------------ | ---------------- |
+| Fling, plain | 0.09–0.10 ms | 0.32 ms      |                  |
+| Fling, cold  | 0.11–0.15 ms | 0.41–0.53 ms | 0.6%             |
+| Fling, warm  | 0.09–0.23 ms | 0.21–0.50 ms | 0%               |
+| Scrub, plain | 0.19 ms      | 0.35–0.41 ms |                  |
+| Scrub, cold  | 0.20–0.32 ms | 0.41–0.56 ms | 91%              |
+| Scrub, warm  | 0.22–0.24 ms | 0.40 ms      | 0%               |
+
+Frames stayed at 8.33 ms p50 in every pass, and the JVM heap stayed at 6 MiB.
+Scrubbing jumps about 1,000 rows a frame, so cold rows are plain until the
+scrubbing stops, as intended.
+
+**Binary size.** Each grammar's code and data, measured with `llvm-size` on its
+static archive for `aarch64-linux-android` (NDK r28, API 26):
+
+| Grammar          | MB   | Grammar    | MB   |
+| ---------------- | ---- | ---------- | ---- |
+| Kotlin           | 5.79 | Markdown   | 0.78 |
+| C++              | 5.59 | Zig        | 0.69 |
+| C#               | 5.33 | C          | 0.63 |
+| Swift            | 3.38 | Python     | 0.45 |
+| TypeScript + TSX | 2.87 | JavaScript | 0.42 |
+| Bash             | 1.36 | Java       | 0.42 |
+| Rust             | 1.12 | Go         | 0.22 |
+| Dart             | 1.08 | YAML       | 0.19 |
+| tree-sitter core | 0.19 | CMake      | 0.07 |
+| TOML, JSON       | 0.04 |            |      |
+
+All grammars together are 30.4 MB. Stripped `libtongs_jni` grows from 1.3 MB to
+34.6 MB on x86-64. On arm64 it's 34.4 MB, or 4.2 MB gzipped, with 16 KB-aligned
+segments.
+
+Findings:
+
+- **Highlighting is cheap to draw.** A `drawText` per run costs little more than
+  one per line; warm scrubs take about 20% more draw CPU than plain text, still
+  a quarter of a millisecond. Cold flings show plain text on 0.6% of rows.
+- **Binary size is the real cost,** and five grammars are three quarters of it.
+  Options, best first:
+  - Play Feature Delivery for the big grammars.
+  - Dropping C# and Swift from the Android build.
+  - Sharing one C/C++ grammar.
+- **Helix's queries track grammar `master`, not crates.io.** Each grammar bump
+  needs the query compile test, and some need a git pin.
+- **Throughput is lower than hoped,** at about 100k lines per second per core.
+  The cache, viewport priority, and the 1 MiB cap keep that off the critical
+  path. Incremental parsing doesn't help, since blobs never change. Skipping
+  Helix's locals queries would save only 13%.
+
 ## Plan
 
 0. **Spike the engine first. It's the main risk.**
@@ -581,8 +672,9 @@ Not covered yet:
   - GitHub's rate limits for git over HTTPS are undocumented.
   - Forgejo admins can disable partial clone. Fallback: Forgejo's batch blob
     API.
-- **Grammar size.** About 23 common languages come to roughly 31 MB
-  uncompressed, and Android stores native libraries uncompressed. Mitigations:
+- **Grammar size.** The 22 starter languages add 33 MB to `libtongs_jni`
+  uncompressed (4 MB gzipped), and Android stores native libraries uncompressed.
+  Kotlin, C++, C#, Swift, and TypeScript alone are 23 MB. Mitigations:
   - Start with about 20 languages.
   - Fall back to plain text for the rest.
   - Consider a TextMate engine for the long tail (syntect is MIT).

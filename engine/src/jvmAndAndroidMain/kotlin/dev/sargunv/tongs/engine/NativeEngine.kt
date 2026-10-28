@@ -29,6 +29,8 @@ internal object NativeEngine {
     out: ByteBuffer,
   ): Int
 
+  @JvmStatic external fun setGrammarDir(dir: String)
+
   @JvmStatic external fun newHighlighter(cacheBytes: Long, threads: Int): Long
 
   @JvmStatic external fun shutdownHighlighter(handle: Long)

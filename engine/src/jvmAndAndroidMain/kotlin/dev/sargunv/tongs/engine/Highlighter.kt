@@ -9,11 +9,20 @@ import kotlin.concurrent.thread
  *
  * @param cacheBytes budget for cached highlights; all of a 600k-line review takes about 20 MiB.
  * @param threads highlighting threads. The default leaves most cores to drawing and fetching.
+ * @param grammarDir where Android extracts each grammar the first time a file needs it, since it
+ *   bundles them compressed rather than linked; all of them take 30 MB there. The default is in the
+ *   app's cache dir, which Android sets as `java.io.tmpdir`. Desktop links grammars in and ignores
+ *   this.
  */
 class Highlighter(
   cacheBytes: Long = 64L shl 20,
   threads: Int = (Runtime.getRuntime().availableProcessors() / 4).coerceIn(1, 4),
+  grammarDir: String? = System.getProperty("java.io.tmpdir")?.let { "$it/tongs-grammars" },
 ) : AutoCloseable {
+  init {
+    grammarDir?.let(NativeEngine::setGrammarDir)
+  }
+
   internal var handle: Long = NativeEngine.newHighlighter(cacheBytes, threads)
     private set
 

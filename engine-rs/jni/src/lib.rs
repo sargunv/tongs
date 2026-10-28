@@ -78,6 +78,20 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_newHighlighter
     Box::into_raw(Box::new(highlights)) as jlong
 }
 
+/// Sets where grammars bundled compressed (on Android) are extracted.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_setGrammarDir<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    dir: JString<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<()> {
+        tongs_highlight::languages::set_grammar_dir(dir.try_to_string(env)?.into());
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 /// Stops the workers and wakes `awaitHighlights` callers, so the handle can
 /// be closed once they return.
 #[unsafe(no_mangle)]

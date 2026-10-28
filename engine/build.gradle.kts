@@ -44,6 +44,44 @@ tasks.register<Exec>("cargoBuild") {
   outputs.dir(rootDir.resolve("target/release"))
 }
 
+val ndkDir =
+  androidComponents.sdkComponents.sdkDirectory
+    .get()
+    .dir("ndk/${libs.versions.android.ndk.get()}")
+    .asFile
+    .path
+
+/**
+ * Builds each tree-sitter grammar as its own compressed shared library, which the Android engine
+ * embeds and extracts on first use instead of linking (see `engine-rs/highlight/src/bundled.rs`).
+ */
+val grammarsDir = layout.buildDirectory.dir("grammars")
+val buildGrammars =
+  tasks.register<Exec>("buildGrammars") {
+    group = "build"
+    description = "Builds the tree-sitter grammars for Android with tongs-grammars."
+    workingDir = rootDir
+    commandLine(
+      "cargo",
+      "run",
+      "--release",
+      "-p",
+      "tongs-grammars",
+      "--",
+      "--ndk=$ndkDir",
+      "--api=${libs.versions.android.minSdk.get()}",
+      "--out=${grammarsDir.get().asFile.path}",
+      "aarch64-linux-android",
+      "x86_64-linux-android",
+    )
+    inputs.files(
+      fileTree(rootDir.resolve("engine-rs/grammars")) { include("**/*.rs", "Cargo.toml") },
+      rootDir.resolve("engine-rs/highlight/Cargo.toml"),
+      rootDir.resolve("Cargo.lock"),
+    )
+    outputs.dir(grammarsDir)
+  }
+
 /** Cross-compiles libtongs_jni for Android into a `jniLibs` layout. */
 abstract class CargoNdkBuild : Exec() {
   @get:OutputDirectory abstract val jniLibs: DirectoryProperty
@@ -56,14 +94,10 @@ val cargoNdkBuild =
     jniLibs = layout.buildDirectory.dir("cargo-ndk/jniLibs")
     workingDir = rootDir
     // cargo-ndk also exports CC, AR, and friends per target, so C deps built with `cc` work.
-    environment(
-      "ANDROID_NDK_HOME",
-      androidComponents.sdkComponents.sdkDirectory
-        .get()
-        .dir("ndk/${libs.versions.android.ndk.get()}")
-        .asFile
-        .path,
-    )
+    environment("ANDROID_NDK_HOME", ndkDir)
+    environment("TONGS_GRAMMARS_DIR", grammarsDir.get().asFile.path)
+    dependsOn(buildGrammars)
+    inputs.dir(grammarsDir)
     commandLine(
       "cargo",
       "ndk",

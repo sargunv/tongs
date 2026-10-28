@@ -9,6 +9,15 @@ publish.workspace = true
 gix-hash = { version = "0.28.1", features = ["sha1"] }
 ropey = { version = "1.6", default-features = false }
 tree-house = { version = "0.4.0", default-features = false }
+
+# Android bundles the grammars compressed and loads them on first use instead
+# (see `src/bundled.rs`), so they don't add 30 MB to every install.
+[target.'cfg(target_os = "android")'.dependencies]
+lzma-rust2 = { version = "0.24.0", default-features = false, features = [
+  "std",
+] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
 tree-house-bindings = { version = "0.3.2", features = ["tree-sitter-language"] }
 tree-sitter-bash = "0.25.1"
 tree-sitter-c = "0.24.2"
@@ -33,4 +42,8 @@ tree-sitter-zig = "1.1.2"
 
 [dev-dependencies]
 anyhow = "1.0.104"
+lzma-rust2 = { version = "0.24.0", default-features = false, features = [
+  "std",
+  "encoder",
+] }
 tongs-engine = { version = "0.1.0", path = "../engine" }

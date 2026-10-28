@@ -50,10 +50,9 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   dir, then
   `adb push /tmp/tongs-spike-store /sdcard/Android/data/dev.sargunv.tongs/files/`
 - `adb shell am start -n dev.sargunv.tongs/.android.MainActivity --ez bench true`:
-  log text-drawing and frame timings under the `Tongs` tag, then exit. Run
+  log frame timings under the `Tongs` tag, then exit. Run
   `adb shell cmd package compile -m speed -f dev.sargunv.tongs` first, since
-  there's no baseline profile yet. Add `--ei row <row>` to open at a row, or
-  `--es textPath DrawText` to use the slower text path
+  there's no baseline profile yet. Add `--ei row <row>` to open at a row
 - `./gradlew :desktopApp:run --args="--pr maplibre/maplibre-native-ffi#760"`:
   fetch any GitHub PR in the app and show it as it loads (needs `gh auth login`
   or `GH_TOKEN`). Objects persist per repo in

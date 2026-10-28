@@ -234,8 +234,8 @@ too, through an ANSI-to-token-run adapter, since logs are also huge.
   - Desktop: Skiko `TextLine` and `drawTextLine`, one shaped run per token run,
     with x = column × advance.
   - Android: glyph IDs cached per character and placed on the column grid with
-    `Canvas.drawGlyphs` (API 31+). Lines with characters off the grid, and older
-    devices, use `Canvas.drawText`.
+    `Canvas.drawGlyphs` (API 31). Lines with characters off the grid use
+    `Canvas.drawText`.
 
   The row model, layout, scrolling, selection, find, and theming are shared
   code.
@@ -482,14 +482,20 @@ All versions verified against releases on 2026-10-28.
 | Formatting and lint  | ktfmt through dprint, detekt 2                                                                                                                 |
 | Desktop packaging    | Compose native distributions; Conveyor if we want auto-update                                                                                  |
 
-**Android floor.** minSdk 26 (Android 8.0), compileSdk and targetSdk 37, NDK r30
+**Android floor.** minSdk 31 (Android 12), compileSdk and targetSdk 37, NDK r30
 (30.0.16248370), with the engine built by cargo-ndk.
 
-- Compose needs 23. The renderer's fast path needs 31, but it keeps a `drawText`
-  path anyway for font fallback, so a lower floor costs one branch. On an API 26
-  emulator the review renders correctly through that path.
-- 26 rather than 23 drops compat code we'd otherwise write: notification
-  channels for inbox notifications, `java.time`, and adaptive icons.
+- 31 is what the renderer's fast path needs: `TextRunShaper` and
+  `Canvas.drawGlyphs`. With one text path, the only `drawText` left is the
+  per-line fallback for characters the glyph grid can't place.
+- It also drops compat code we'd otherwise write: the platform splash screen,
+  dynamic color without a version check, notification channels, `java.time`, and
+  adaptive icons.
+- Nothing concrete justifies a higher floor yet. The one workaround in the code
+  that a later floor removes is in `Review.kt`: a relative `ByteBuffer.get`
+  instead of the absolute bulk `get` from API 35. That isn't worth dropping
+  Android 12 to 14. Edge-to-edge and the notification permission look
+  version-bound, but they follow targetSdk, not minSdk.
 - compileSdk is 37 because CMP 1.12.2's androidx dependencies require it.
 - AGP 9 conventions: KMP libraries use
   `com.android.kotlin.multiplatform.library` with a `kotlin { android {} }`

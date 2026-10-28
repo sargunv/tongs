@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 3,
-    "identityHash": "1a800fd7f538c7f929f9aa82a14fa8d7",
+    "identityHash": "9e575192dd64749d00a430772cf69b3d",
     "entities": [
       {
         "tableName": "account",
@@ -365,8 +365,8 @@
         }
       },
       {
-        "tableName": "changes_pr",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` INTEGER NOT NULL, `owner` TEXT NOT NULL, `repo` TEXT NOT NULL, `number` INTEGER NOT NULL, `nodeId` TEXT NOT NULL, `title` TEXT NOT NULL, `state` TEXT NOT NULL, `headOid` TEXT NOT NULL, `authorLogin` TEXT, `webUrl` TEXT NOT NULL, `viewerDidAuthor` INTEGER NOT NULL, `viewerReviewRequested` INTEGER NOT NULL, `viewerHasPendingReview` INTEGER NOT NULL, `syncedAt` INTEGER NOT NULL, PRIMARY KEY(`accountId`, `owner`, `repo`, `number`), FOREIGN KEY(`accountId`) REFERENCES `account`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "tableName": "thread",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` INTEGER NOT NULL, `repoOwner` TEXT NOT NULL, `repoName` TEXT NOT NULL, `number` INTEGER NOT NULL, `kind` TEXT NOT NULL, `detail` TEXT NOT NULL, `fetchedAt` INTEGER NOT NULL, `timelineCount` INTEGER NOT NULL, `gapCursor` TEXT, PRIMARY KEY(`accountId`, `repoOwner`, `repoName`, `number`), FOREIGN KEY(`accountId`) REFERENCES `account`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "accountId",
@@ -375,14 +375,14 @@
             "notNull": true
           },
           {
-            "fieldPath": "owner",
-            "columnName": "owner",
+            "fieldPath": "repoOwner",
+            "columnName": "repoOwner",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "repo",
-            "columnName": "repo",
+            "fieldPath": "repoName",
+            "columnName": "repoName",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -393,68 +393,38 @@
             "notNull": true
           },
           {
-            "fieldPath": "nodeId",
-            "columnName": "nodeId",
+            "fieldPath": "kind",
+            "columnName": "kind",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "title",
-            "columnName": "title",
+            "fieldPath": "detail",
+            "columnName": "detail",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "state",
-            "columnName": "state",
-            "affinity": "TEXT",
+            "fieldPath": "fetchedAt",
+            "columnName": "fetchedAt",
+            "affinity": "INTEGER",
             "notNull": true
           },
           {
-            "fieldPath": "headOid",
-            "columnName": "headOid",
-            "affinity": "TEXT",
+            "fieldPath": "timelineCount",
+            "columnName": "timelineCount",
+            "affinity": "INTEGER",
             "notNull": true
           },
           {
-            "fieldPath": "authorLogin",
-            "columnName": "authorLogin",
+            "fieldPath": "gapCursor",
+            "columnName": "gapCursor",
             "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "webUrl",
-            "columnName": "webUrl",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "viewerDidAuthor",
-            "columnName": "viewerDidAuthor",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "viewerReviewRequested",
-            "columnName": "viewerReviewRequested",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "viewerHasPendingReview",
-            "columnName": "viewerHasPendingReview",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "syncedAt",
-            "columnName": "syncedAt",
-            "affinity": "INTEGER",
-            "notNull": true
           }
         ],
         "primaryKey": {
           "autoGenerate": false,
-          "columnNames": ["accountId", "owner", "repo", "number"]
+          "columnNames": ["accountId", "repoOwner", "repoName", "number"]
         },
         "foreignKeys": [
           {
@@ -467,8 +437,8 @@
         ]
       },
       {
-        "tableName": "changes_viewed_file",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` INTEGER NOT NULL, `owner` TEXT NOT NULL, `repo` TEXT NOT NULL, `number` INTEGER NOT NULL, `path` TEXT NOT NULL, `blobOid` TEXT NOT NULL, `viewed` INTEGER NOT NULL, `pending` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`accountId`, `owner`, `repo`, `number`, `path`, `blobOid`), FOREIGN KEY(`accountId`) REFERENCES `account`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "tableName": "thread_item",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` INTEGER NOT NULL, `repoOwner` TEXT NOT NULL, `repoName` TEXT NOT NULL, `number` INTEGER NOT NULL, `id` TEXT NOT NULL, `position` INTEGER NOT NULL, `item` TEXT NOT NULL, `pending` INTEGER NOT NULL, PRIMARY KEY(`accountId`, `repoOwner`, `repoName`, `number`, `id`), FOREIGN KEY(`accountId`, `repoOwner`, `repoName`, `number`) REFERENCES `thread`(`accountId`, `repoOwner`, `repoName`, `number`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "accountId",
@@ -477,14 +447,14 @@
             "notNull": true
           },
           {
-            "fieldPath": "owner",
-            "columnName": "owner",
+            "fieldPath": "repoOwner",
+            "columnName": "repoOwner",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "repo",
-            "columnName": "repo",
+            "fieldPath": "repoName",
+            "columnName": "repoName",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -495,21 +465,21 @@
             "notNull": true
           },
           {
-            "fieldPath": "path",
-            "columnName": "path",
+            "fieldPath": "id",
+            "columnName": "id",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "blobOid",
-            "columnName": "blobOid",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "viewed",
-            "columnName": "viewed",
+            "fieldPath": "position",
+            "columnName": "position",
             "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "item",
+            "columnName": "item",
+            "affinity": "TEXT",
             "notNull": true
           },
           {
@@ -517,45 +487,46 @@
             "columnName": "pending",
             "affinity": "INTEGER",
             "notNull": true
-          },
-          {
-            "fieldPath": "updatedAt",
-            "columnName": "updatedAt",
-            "affinity": "INTEGER",
-            "notNull": true
           }
         ],
         "primaryKey": {
           "autoGenerate": false,
-          "columnNames": [
-            "accountId",
-            "owner",
-            "repo",
-            "number",
-            "path",
-            "blobOid"
-          ]
+          "columnNames": ["accountId", "repoOwner", "repoName", "number", "id"]
         },
+        "indices": [
+          {
+            "name": "index_thread_item_accountId_repoOwner_repoName_number_position",
+            "unique": false,
+            "columnNames": [
+              "accountId",
+              "repoOwner",
+              "repoName",
+              "number",
+              "position"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_thread_item_accountId_repoOwner_repoName_number_position` ON `${TABLE_NAME}` (`accountId`, `repoOwner`, `repoName`, `number`, `position`)"
+          }
+        ],
         "foreignKeys": [
           {
-            "table": "account",
+            "table": "thread",
             "onDelete": "CASCADE",
             "onUpdate": "NO ACTION",
-            "columns": ["accountId"],
-            "referencedColumns": ["id"]
+            "columns": ["accountId", "repoOwner", "repoName", "number"],
+            "referencedColumns": [
+              "accountId",
+              "repoOwner",
+              "repoName",
+              "number"
+            ]
           }
         ]
       },
       {
-        "tableName": "changes_draft_comment",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `accountId` INTEGER NOT NULL, `owner` TEXT NOT NULL, `repo` TEXT NOT NULL, `number` INTEGER NOT NULL, `commitOid` TEXT NOT NULL, `path` TEXT NOT NULL, `side` TEXT NOT NULL, `startSide` TEXT NOT NULL, `startLine` INTEGER NOT NULL, `endLine` INTEGER NOT NULL, `body` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`accountId`) REFERENCES `account`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "tableName": "thread_review_thread",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` INTEGER NOT NULL, `repoOwner` TEXT NOT NULL, `repoName` TEXT NOT NULL, `number` INTEGER NOT NULL, `id` TEXT NOT NULL, `thread` TEXT NOT NULL, PRIMARY KEY(`accountId`, `repoOwner`, `repoName`, `number`, `id`), FOREIGN KEY(`accountId`, `repoOwner`, `repoName`, `number`) REFERENCES `thread`(`accountId`, `repoOwner`, `repoName`, `number`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
-          {
-            "fieldPath": "id",
-            "columnName": "id",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
           {
             "fieldPath": "accountId",
             "columnName": "accountId",
@@ -563,14 +534,14 @@
             "notNull": true
           },
           {
-            "fieldPath": "owner",
-            "columnName": "owner",
+            "fieldPath": "repoOwner",
+            "columnName": "repoOwner",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "repo",
-            "columnName": "repo",
+            "fieldPath": "repoName",
+            "columnName": "repoName",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -581,39 +552,75 @@
             "notNull": true
           },
           {
-            "fieldPath": "commitOid",
-            "columnName": "commitOid",
+            "fieldPath": "id",
+            "columnName": "id",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "path",
-            "columnName": "path",
+            "fieldPath": "thread",
+            "columnName": "thread",
             "affinity": "TEXT",
             "notNull": true
-          },
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": ["accountId", "repoOwner", "repoName", "number", "id"]
+        },
+        "foreignKeys": [
           {
-            "fieldPath": "side",
-            "columnName": "side",
-            "affinity": "TEXT",
-            "notNull": true
-          },
+            "table": "thread",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": ["accountId", "repoOwner", "repoName", "number"],
+            "referencedColumns": [
+              "accountId",
+              "repoOwner",
+              "repoName",
+              "number"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "draft",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` INTEGER NOT NULL, `key` TEXT NOT NULL, `repoOwner` TEXT NOT NULL, `repoName` TEXT NOT NULL, `number` INTEGER NOT NULL, `slot` TEXT NOT NULL, `body` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`accountId`, `key`), FOREIGN KEY(`accountId`) REFERENCES `account`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
           {
-            "fieldPath": "startSide",
-            "columnName": "startSide",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "startLine",
-            "columnName": "startLine",
+            "fieldPath": "accountId",
+            "columnName": "accountId",
             "affinity": "INTEGER",
             "notNull": true
           },
           {
-            "fieldPath": "endLine",
-            "columnName": "endLine",
+            "fieldPath": "key",
+            "columnName": "key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "repoOwner",
+            "columnName": "repoOwner",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "repoName",
+            "columnName": "repoName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "number",
+            "columnName": "number",
             "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "slot",
+            "columnName": "slot",
+            "affinity": "TEXT",
             "notNull": true
           },
           {
@@ -623,76 +630,6 @@
             "notNull": true
           },
           {
-            "fieldPath": "createdAt",
-            "columnName": "createdAt",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "updatedAt",
-            "columnName": "updatedAt",
-            "affinity": "INTEGER",
-            "notNull": true
-          }
-        ],
-        "primaryKey": {
-          "autoGenerate": true,
-          "columnNames": ["id"]
-        },
-        "indices": [
-          {
-            "name": "index_changes_draft_comment_accountId_owner_repo_number",
-            "unique": false,
-            "columnNames": ["accountId", "owner", "repo", "number"],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_changes_draft_comment_accountId_owner_repo_number` ON `${TABLE_NAME}` (`accountId`, `owner`, `repo`, `number`)"
-          }
-        ],
-        "foreignKeys": [
-          {
-            "table": "account",
-            "onDelete": "CASCADE",
-            "onUpdate": "NO ACTION",
-            "columns": ["accountId"],
-            "referencedColumns": ["id"]
-          }
-        ]
-      },
-      {
-        "tableName": "changes_draft_review",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` INTEGER NOT NULL, `owner` TEXT NOT NULL, `repo` TEXT NOT NULL, `number` INTEGER NOT NULL, `summary` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`accountId`, `owner`, `repo`, `number`), FOREIGN KEY(`accountId`) REFERENCES `account`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
-        "fields": [
-          {
-            "fieldPath": "accountId",
-            "columnName": "accountId",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "owner",
-            "columnName": "owner",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "repo",
-            "columnName": "repo",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "number",
-            "columnName": "number",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "summary",
-            "columnName": "summary",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
             "fieldPath": "updatedAt",
             "columnName": "updatedAt",
             "affinity": "INTEGER",
@@ -701,120 +638,15 @@
         ],
         "primaryKey": {
           "autoGenerate": false,
-          "columnNames": ["accountId", "owner", "repo", "number"]
-        },
-        "foreignKeys": [
-          {
-            "table": "account",
-            "onDelete": "CASCADE",
-            "onUpdate": "NO ACTION",
-            "columns": ["accountId"],
-            "referencedColumns": ["id"]
-          }
-        ]
-      },
-      {
-        "tableName": "changes_thread",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` INTEGER NOT NULL, `id` TEXT NOT NULL, `owner` TEXT NOT NULL, `repo` TEXT NOT NULL, `number` INTEGER NOT NULL, `path` TEXT NOT NULL, `side` TEXT NOT NULL, `startSide` TEXT, `line` INTEGER, `startLine` INTEGER, `originalLine` INTEGER, `isResolved` INTEGER NOT NULL, `isOutdated` INTEGER NOT NULL, `isFileLevel` INTEGER NOT NULL, `position` INTEGER NOT NULL, PRIMARY KEY(`accountId`, `id`), FOREIGN KEY(`accountId`) REFERENCES `account`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
-        "fields": [
-          {
-            "fieldPath": "accountId",
-            "columnName": "accountId",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "id",
-            "columnName": "id",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "owner",
-            "columnName": "owner",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "repo",
-            "columnName": "repo",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "number",
-            "columnName": "number",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "path",
-            "columnName": "path",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "side",
-            "columnName": "side",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "startSide",
-            "columnName": "startSide",
-            "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "line",
-            "columnName": "line",
-            "affinity": "INTEGER"
-          },
-          {
-            "fieldPath": "startLine",
-            "columnName": "startLine",
-            "affinity": "INTEGER"
-          },
-          {
-            "fieldPath": "originalLine",
-            "columnName": "originalLine",
-            "affinity": "INTEGER"
-          },
-          {
-            "fieldPath": "isResolved",
-            "columnName": "isResolved",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "isOutdated",
-            "columnName": "isOutdated",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "isFileLevel",
-            "columnName": "isFileLevel",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "position",
-            "columnName": "position",
-            "affinity": "INTEGER",
-            "notNull": true
-          }
-        ],
-        "primaryKey": {
-          "autoGenerate": false,
-          "columnNames": ["accountId", "id"]
+          "columnNames": ["accountId", "key"]
         },
         "indices": [
           {
-            "name": "index_changes_thread_accountId_owner_repo_number",
+            "name": "index_draft_accountId_repoOwner_repoName_number",
             "unique": false,
-            "columnNames": ["accountId", "owner", "repo", "number"],
+            "columnNames": ["accountId", "repoOwner", "repoName", "number"],
             "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_changes_thread_accountId_owner_repo_number` ON `${TABLE_NAME}` (`accountId`, `owner`, `repo`, `number`)"
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_draft_accountId_repoOwner_repoName_number` ON `${TABLE_NAME}` (`accountId`, `repoOwner`, `repoName`, `number`)"
           }
         ],
         "foreignKeys": [
@@ -824,87 +656,13 @@
             "onUpdate": "NO ACTION",
             "columns": ["accountId"],
             "referencedColumns": ["id"]
-          }
-        ]
-      },
-      {
-        "tableName": "changes_thread_comment",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` INTEGER NOT NULL, `id` TEXT NOT NULL, `threadId` TEXT NOT NULL, `authorLogin` TEXT, `authorAvatarUrl` TEXT, `body` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `position` INTEGER NOT NULL, PRIMARY KEY(`accountId`, `id`), FOREIGN KEY(`accountId`, `threadId`) REFERENCES `changes_thread`(`accountId`, `id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
-        "fields": [
-          {
-            "fieldPath": "accountId",
-            "columnName": "accountId",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "id",
-            "columnName": "id",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "threadId",
-            "columnName": "threadId",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "authorLogin",
-            "columnName": "authorLogin",
-            "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "authorAvatarUrl",
-            "columnName": "authorAvatarUrl",
-            "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "body",
-            "columnName": "body",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "createdAt",
-            "columnName": "createdAt",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "position",
-            "columnName": "position",
-            "affinity": "INTEGER",
-            "notNull": true
-          }
-        ],
-        "primaryKey": {
-          "autoGenerate": false,
-          "columnNames": ["accountId", "id"]
-        },
-        "indices": [
-          {
-            "name": "index_changes_thread_comment_accountId_threadId",
-            "unique": false,
-            "columnNames": ["accountId", "threadId"],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_changes_thread_comment_accountId_threadId` ON `${TABLE_NAME}` (`accountId`, `threadId`)"
-          }
-        ],
-        "foreignKeys": [
-          {
-            "table": "changes_thread",
-            "onDelete": "CASCADE",
-            "onUpdate": "NO ACTION",
-            "columns": ["accountId", "threadId"],
-            "referencedColumns": ["accountId", "id"]
           }
         ]
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '1a800fd7f538c7f929f9aa82a14fa8d7')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '9e575192dd64749d00a430772cf69b3d')"
     ]
   }
 }

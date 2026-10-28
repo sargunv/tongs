@@ -5,6 +5,7 @@ android-minSdk = "31"
 android-ndk = "30.0.16248370"
 androidx-activity = "1.13.0"
 apollo = "5.2.0"
+coil = "3.6.3"
 compose = "1.12.2"
 # Compose Multiplatform versions Material 3 apart from the rest of Compose. This is the one CMP
 # 1.12.2 pairs with (Jetpack Material 3 1.5.0-alpha22), which has the Expressive APIs.
@@ -19,6 +20,7 @@ kotlinx-serialization = "1.12.0"
 ksp = "2.3.12"
 ktor = "3.6.0"
 lifecycle = "2.11.0"
+markdown-renderer = "0.46.0"
 material-kolor = "5.0.1"
 metro = "1.5.0"
 navigation3 = "1.2.0"
@@ -31,6 +33,8 @@ turbine = "1.2.1"
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
 apollo-runtime = { module = "com.apollographql.apollo:apollo-runtime", version.ref = "apollo" }
+coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
+coil-network-ktor3 = { module = "io.coil-kt.coil3:coil-network-ktor3", version.ref = "coil" }
 compose-components-resources = { module = "org.jetbrains.compose.components:components-resources", version.ref = "compose" }
 compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "compose" }
 compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "compose-material3" }
@@ -54,6 +58,9 @@ ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "kto
 lifecycle-runtime-compose = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
 lifecycle-viewmodel-compose = { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 lifecycle-viewmodel-navigation3 = { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel-navigation3", version.ref = "lifecycle" }
+markdown-renderer = { module = "com.mikepenz:multiplatform-markdown-renderer", version.ref = "markdown-renderer" }
+markdown-renderer-coil3 = { module = "com.mikepenz:multiplatform-markdown-renderer-coil3", version.ref = "markdown-renderer" }
+markdown-renderer-m3 = { module = "com.mikepenz:multiplatform-markdown-renderer-m3", version.ref = "markdown-renderer" }
 material-kolor = { module = "com.materialkolor:material-kolor", version.ref = "material-kolor" }
 navigation3-ui = { module = "org.jetbrains.androidx.navigation3:navigation3-ui", version.ref = "navigation3" }
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }

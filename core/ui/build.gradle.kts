@@ -11,6 +11,7 @@ kotlin {
       api(libs.compose.material3.navigationSuite)
       api(libs.kotlinx.datetime)
       implementation(libs.material.kolor)
+      implementation(libs.coil.compose)
     }
   }
 }

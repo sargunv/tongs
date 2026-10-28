@@ -30,7 +30,7 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
-import dev.sargunv.tongs.core.data.ReviewCommentEntity
+import dev.sargunv.tongs.core.data.ChangesThreadCommentEntity
 import dev.sargunv.tongs.core.ui.ReviewIcons
 import dev.sargunv.tongs.core.ui.shortAge
 import kotlin.time.Clock
@@ -205,7 +205,11 @@ private fun ThreadCard(
 }
 
 @Composable
-private fun CommentHeader(comment: ReviewCommentEntity, metrics: CardMetrics, tags: List<String>) {
+private fun CommentHeader(
+  comment: ChangesThreadCommentEntity,
+  metrics: CardMetrics,
+  tags: List<String>,
+) {
   Row(verticalAlignment = Alignment.CenterVertically) {
     Text(
       comment.authorLogin ?: "ghost",

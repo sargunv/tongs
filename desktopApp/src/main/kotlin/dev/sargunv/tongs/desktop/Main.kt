@@ -30,6 +30,8 @@ import org.jetbrains.skia.EncodedImageFormat
  * - `--changes-screenshots=dir [--open=owner/repo#N] [--review=owner/repo#N] [--api-url=url]
  *   [--mutate]` drives the PR changes screen offscreen; see [renderChangesScreenshots].
  * - `--open=owner/repo#N` (or a PR link) runs the app with that PR's changes open.
+ * - `--thread-screenshots=dir owner/repo#number…` renders public threads and the composer
+ *   offscreen; see [renderThreadScreenshots].
  */
 fun main(args: Array<String>) {
   val spike =
@@ -43,7 +45,10 @@ fun main(args: Array<String>) {
   if (!spike) {
     val shots = flag("app-screenshots")
     val changes = flag("changes-screenshots")
+    val threadShots = flag("thread-screenshots")
     when {
+      threadShots != null ->
+        renderThreadScreenshots(File(threadShots), args.filterNot { it.startsWith("--") })
       shots != null -> renderAppScreenshots(File(shots))
       changes != null ->
         renderChangesScreenshots(

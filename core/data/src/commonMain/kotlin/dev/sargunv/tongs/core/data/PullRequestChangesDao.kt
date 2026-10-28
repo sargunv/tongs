@@ -146,7 +146,7 @@ data class DraftReviewEntity(
     ],
   indices = [Index("accountId", "owner", "repo", "number")],
 )
-data class ReviewThreadEntity(
+data class ChangesThreadEntity(
   val accountId: Long,
   val id: String,
   val owner: String,
@@ -171,7 +171,7 @@ data class ReviewThreadEntity(
   foreignKeys =
     [
       ForeignKey(
-        entity = ReviewThreadEntity::class,
+        entity = ChangesThreadEntity::class,
         parentColumns = ["accountId", "id"],
         childColumns = ["accountId", "threadId"],
         onDelete = ForeignKey.CASCADE,
@@ -179,7 +179,7 @@ data class ReviewThreadEntity(
     ],
   indices = [Index("accountId", "threadId")],
 )
-data class ReviewCommentEntity(
+data class ChangesThreadCommentEntity(
   val accountId: Long,
   val id: String,
   val threadId: String,
@@ -365,7 +365,7 @@ interface PullRequestChangesDao {
     owner: String,
     repo: String,
     number: Int,
-  ): Flow<List<ReviewThreadEntity>>
+  ): Flow<List<ChangesThreadEntity>>
 
   @Query(
     """
@@ -380,7 +380,7 @@ interface PullRequestChangesDao {
     owner: String,
     repo: String,
     number: Int,
-  ): Flow<List<ReviewCommentEntity>>
+  ): Flow<List<ChangesThreadCommentEntity>>
 
   @Query(
     """
@@ -390,7 +390,7 @@ interface PullRequestChangesDao {
   )
   suspend fun deleteThreads(accountId: Long, owner: String, repo: String, number: Int)
 
-  @Upsert suspend fun upsertThreads(threads: List<ReviewThreadEntity>)
+  @Upsert suspend fun upsertThreads(threads: List<ChangesThreadEntity>)
 
-  @Upsert suspend fun upsertThreadComments(comments: List<ReviewCommentEntity>)
+  @Upsert suspend fun upsertThreadComments(comments: List<ChangesThreadCommentEntity>)
 }

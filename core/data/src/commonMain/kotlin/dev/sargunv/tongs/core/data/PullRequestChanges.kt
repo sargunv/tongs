@@ -31,8 +31,8 @@ data class PullRequestKey(val accountId: Long, val repo: RepoRef, val number: In
 data class FileVersion(val path: String, val blob: String)
 
 class ReviewThreadWithComments(
-  val thread: ReviewThreadEntity,
-  val comments: List<ReviewCommentEntity>,
+  val thread: ChangesThreadEntity,
+  val comments: List<ChangesThreadCommentEntity>,
 )
 
 /** A pending review comment, with its anchor decoded. */
@@ -122,7 +122,7 @@ class PullRequestChangesRepository(
       dao.deleteThreads(key.accountId, key.repo.owner, key.repo.name, key.number)
       dao.upsertThreads(
         threads.mapIndexed { i, t ->
-          ReviewThreadEntity(
+          ChangesThreadEntity(
             accountId = key.accountId,
             id = t.id,
             owner = key.repo.owner,
@@ -144,7 +144,7 @@ class PullRequestChangesRepository(
       dao.upsertThreadComments(
         threads.flatMap { t ->
           t.comments.mapIndexed { i, c ->
-            ReviewCommentEntity(
+            ChangesThreadCommentEntity(
               accountId = key.accountId,
               id = c.id,
               threadId = t.id,

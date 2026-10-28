@@ -72,7 +72,7 @@ data class PullRequestOverview(
 )
 
 /** An existing comment thread on a PR's diff. */
-data class ReviewThread(
+data class DiffReviewThread(
   val id: String,
   val path: String,
   val side: DiffSide,
@@ -103,7 +103,7 @@ data class ReviewComment(
 interface PullRequestReviews {
   suspend fun overview(repo: RepoRef, number: Int): PullRequestOverview
 
-  suspend fun threads(repo: RepoRef, number: Int): List<ReviewThread>
+  suspend fun threads(repo: RepoRef, number: Int): List<DiffReviewThread>
 
   /** Null if the forge has no viewed state. */
   suspend fun viewedFiles(repo: RepoRef, number: Int): Map<String, FileViewedState>?

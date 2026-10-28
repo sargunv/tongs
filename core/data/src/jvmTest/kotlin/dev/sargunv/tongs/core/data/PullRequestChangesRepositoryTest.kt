@@ -3,6 +3,7 @@ package dev.sargunv.tongs.core.data
 import app.cash.turbine.test
 import dev.sargunv.tongs.engine.DiffSide
 import dev.sargunv.tongs.forge.api.Account
+import dev.sargunv.tongs.forge.api.DiffReviewThread
 import dev.sargunv.tongs.forge.api.FileViewedState
 import dev.sargunv.tongs.forge.api.ForgeAdapter
 import dev.sargunv.tongs.forge.api.ForgeClient
@@ -15,7 +16,6 @@ import dev.sargunv.tongs.forge.api.ReviewAnchor
 import dev.sargunv.tongs.forge.api.ReviewComment
 import dev.sargunv.tongs.forge.api.ReviewEvent
 import dev.sargunv.tongs.forge.api.ReviewSubmission
-import dev.sargunv.tongs.forge.api.ReviewThread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -31,7 +31,7 @@ class FakeReviews : PullRequestReviews {
   val calls = mutableListOf<String>()
   val submissions = mutableListOf<ReviewSubmission>()
   var remoteViewed = mapOf<String, FileViewedState>()
-  var threads = listOf<ReviewThread>()
+  var threads = listOf<DiffReviewThread>()
   /** If set, mutations wait for it; complete it exceptionally to fail them. */
   var gate: CompletableDeferred<Unit>? = null
 
@@ -195,7 +195,7 @@ class PullRequestChangesRepositoryTest {
     val (repo, key) = repository(db)
     forge.threads =
       listOf(
-        ReviewThread(
+        DiffReviewThread(
           id = "T1",
           path = "src/a.kt",
           side = DiffSide.New,

@@ -8,6 +8,7 @@ import com.apollographql.apollo.api.Optional
 import com.apollographql.apollo.api.Query
 import dev.sargunv.tongs.core.net.HttpException
 import dev.sargunv.tongs.engine.DiffSide
+import dev.sargunv.tongs.forge.api.DiffReviewThread
 import dev.sargunv.tongs.forge.api.FileViewedState
 import dev.sargunv.tongs.forge.api.Instance
 import dev.sargunv.tongs.forge.api.PullRequestOverview
@@ -17,7 +18,6 @@ import dev.sargunv.tongs.forge.api.ReviewAnchor
 import dev.sargunv.tongs.forge.api.ReviewComment
 import dev.sargunv.tongs.forge.api.ReviewEvent
 import dev.sargunv.tongs.forge.api.ReviewSubmission
-import dev.sargunv.tongs.forge.api.ReviewThread
 import dev.sargunv.tongs.forge.github.graphql.MarkFileAsViewedMutation
 import dev.sargunv.tongs.forge.github.graphql.PullRequestOverviewQuery
 import dev.sargunv.tongs.forge.github.graphql.PullRequestReviewThreadsQuery
@@ -75,8 +75,8 @@ class GitHubPullRequestReviews(
     )
   }
 
-  override suspend fun threads(repo: RepoRef, number: Int): List<ReviewThread> {
-    val out = mutableListOf<ReviewThread>()
+  override suspend fun threads(repo: RepoRef, number: Int): List<DiffReviewThread> {
+    val out = mutableListOf<DiffReviewThread>()
     var after: String? = null
     do {
       val page =
@@ -94,7 +94,7 @@ class GitHubPullRequestReviews(
           ?.reviewThreads ?: break
       for (node in page.nodes.orEmpty().filterNotNull()) {
         out +=
-          ReviewThread(
+          DiffReviewThread(
             id = node.id,
             path = node.path,
             side = node.diffSide.toSide(),

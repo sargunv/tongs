@@ -586,6 +586,35 @@ express that, so its adapter will have to narrow such a range.
   - Timeline items include typed events.
   - Reactions, labels, and assignees.
   - Sub-issues and dependencies where the capability allows.
+  - **As built.**
+    - Order: title and a state pill, the summary card, the primary action, the
+      description, the timeline, then Reply and Quote. The summary card has one
+      row each for changes (files, +/−, commits, and a viewed bar from GitHub's
+      `viewerViewedState`), checks (expandable to the failing and running ones
+      first), reviews (verdicts and who's still requested), mergeability with
+      head → base, labels, assignees, and milestone. Issues show only the
+      metadata rows.
+    - The primary action is Changes; Merge joins it, filled, when the PR is
+      open, approved or not requiring review, mergeable, its checks green, and
+      the account can merge. Merge asks for a method, from those the repo
+      allows, and sends `expectedHeadOid` so a push since loading fails it.
+    - The timeline collapses runs: consecutive commits read "mona added 3
+      commits", one person's label changes within ten minutes read as one line,
+      and a merge hides the closed event GitHub records with it. Reviews show
+      their body and the review comment threads they started, each collapsed to
+      `file:line`, its resolved and outdated tags, and a one-line peek; it
+      expands to the diff hunk's tail and the comments. Reviews that only
+      replied in other threads are one quiet line. Events are one line each, an
+      icon in the avatar column, with closes and merges in their state colors.
+    - Long timelines load their first 15 and last 40 items, with "N hidden items
+      · Load more" between them, which pages forward from the start. A refresh
+      replaces both ends.
+    - Opens from Room at once and refreshes in the background on every open;
+      pull to refresh on touch, a refresh button on desktop. A failed refresh
+      keeps the cache and says why only when there's nothing cached.
+    - Links in bodies to issues and PRs open in the app and stack, so back
+      returns (`Navigator.push`); picking from the inbox still replaces. `@user`
+      and commit links open the browser until those screens exist.
 - **PR changes.** Reading a PR's changes and reviewing it are the same screen,
   opened from a "Changes" entry on the PR, not a "Start review" button: people
   read diffs without meaning to review. One virtual surface over all files.
@@ -647,6 +676,35 @@ express that, so its adapter will have to narrow such a range.
     A "suggest change" action prefills the selected lines.
   - The pending review is drafted locally first, so drafts survive offline and
     crashes, then submitted as a batch.
+  - **As built.**
+    - The composer is `Composer` in `core/composer`, which `feature/review` can
+      reuse for line comments without depending on `feature/thread`. It takes a
+      `ComposerState` (from `rememberComposerState(draftKey, drafts)`), a title,
+      and a list of `ComposerAction`s, and fills the space it's given; where it
+      sits is the caller's choice.
+    - The thread's composer is its own route, `Route.ThreadReply`, in a new
+      `Pane.Extra`: Material's list-detail extra pane. Unfolded or on desktop it
+      docks beside the thread and the inbox makes way, so the thread stays
+      readable while you write; folded it covers the screen. Back closes it, and
+      the draft stays.
+    - Drafts live in Room's `draft` table, keyed by account and `DraftKey`
+      (thread plus a slot: `reply`, or e.g. `review/<path>:<line>`). The
+      composer saves 400 ms after typing stops and again when it leaves the
+      screen, deletes the draft when emptied, and adopts changes made elsewhere,
+      so "Quote reply" appends to an open composer. The end of a thread with a
+      draft says Draft instead of Reply, and inbox rows show the draft's start.
+    - Sending is optimistic: the composer closes, the comment shows at once as
+      "Sending…", and the draft is deleted only once GitHub has the comment. If
+      GitHub refuses, the comment disappears, the draft stays, and a snackbar
+      says so. Close and Reopen with comment post the comment first, then change
+      the state, then refetch for GitHub's own event.
+    - The toolbar has bold, italic, strikethrough, heading, code (a fence when
+      the selection spans lines), link, quote, lists, task list, and mention;
+      Ctrl/⌘ B, I, E, K format, Ctrl/⌘+Enter comments, and Escape closes.
+      Preview renders exactly as the thread will. No attachments yet.
+    - Reactions are GitHub's fixed eight, as chips under each body and comment
+      with an add button; tapping toggles optimistically and refetches if GitHub
+      refuses.
 - **CI.** Rollup on the PR, then runs and jobs, then logs in the code view.
 - **Merge.**
   - GitHub: the async merge API (direct, queue, or auto-merge).
@@ -682,6 +740,27 @@ hooks plug in:
 GitHub's `bodyHTML` is the fallback for constructs we can't render, such as
 Mermaid and math.
 
+**As built** (`core/markdown`, renderer 0.46.0):
+
+- The linkifier walks the JetBrains Markdown AST and splices links into plain
+  text only, never into code, links, or HTML. `#123` and SHAs need the thread's
+  repo; links point at the web URL, which `ProvideForgeLinks` turns back into an
+  in-app route.
+- The renderer drops HTML, so common GitHub HTML is rewritten first: comments
+  removed, `<img>` and `<a>` to Markdown, `<summary>` and headings to bold
+  lines, `<br>` to breaks. `<details>` doesn't collapse; `bodyHTML` isn't used
+  yet.
+- Code fences are highlighted by the engine, through a JNI call that runs
+  `tongs-highlight`'s whole-file highlighter on the snippet (`highlightSnippet`)
+  off the main thread; the fence shows plain first. Unknown languages, snippets
+  over 256 KiB, and builds without the native library stay plain.
+- Images and avatars load through one Coil 3 `ImageLoader` on the app's Ktor
+  client, with a disk cache. Requests carry no token, so images on private repos
+  may not load.
+- Single newlines are line breaks, as in GitHub comments, and bodies under 4,000
+  characters parse during composition so lists don't jump; longer ones parse off
+  the main thread.
+
 ## Stack
 
 All versions verified against releases on 2026-10-28.
@@ -693,7 +772,7 @@ All versions verified against releases on 2026-10-28.
 | Navigation and state | Navigation 3 (JetBrains 1.2.0), KMP ViewModel 2.11                                                                                             |
 | DI                   | Metro 1.5 (forge adapters registered as a multibinding map)                                                                                    |
 | Data                 | Room 3.0 (`androidx.room3`) with bundled SQLite 2.7, DataStore 1.3, Ktor 3.6, Apollo 5.2, kotlinx.serialization 1.12, kotlinx-datetime 0.8     |
-| Images               | Coil 3, once there are avatars to load                                                                                                         |
+| Images               | Coil 3.6 (`coil-network-ktor3` on the app's client); Markdown through mikepenz's multiplatform-markdown-renderer 0.46                          |
 | Engine               | Rust with gix-protocol, gix-pack, gix-diff, gix-attributes, imara-diff, tree-house plus Helix queries, and `linguist`; UniFFI 0.32 plus jni-rs |
 | Testing              | kotlin.test, Turbine, Ktor's mock engine, Compose UI tests, Roborazzi 1.77 on desktop; cargo tests and criterion benches for the engine        |
 | Formatting and lint  | ktfmt through dprint; detekt 2 once it's out of alpha                                                                                          |
@@ -755,6 +834,9 @@ them together.
 - `core/{navigation,ui,data,net}`: routes and navigator, design system, Room
   store and sync, HTTP. The neutral model lives in `forge/api` rather than a
   separate `core/model`
+- `core/markdown` and `core/composer`: rendering forge Markdown, and writing it.
+  Both are core modules so the thread and the changes view share them without
+  depending on each other
 - `forge/{api,github}`, later `gitea` and `forgejo`
 - `engine` (Kotlin facade) and `engine-rs` (Cargo workspace)
 - `codeview`
@@ -1420,8 +1502,9 @@ alternating `main` with the branch, two runs each:
 1. **Skeleton.** Built on 2026-10-28, except where noted:
    - Accounts: GitHub PAT. The device flow is modeled but waits on an OAuth App.
    - Room store and sync.
-   - Inbox. The thread view is a placeholder with a link out and the PR's
-     changes.
+   - Inbox.
+   - The thread view and composer, built on 2026-10-28: see Navigation and
+     screens.
    - Android and desktop shells.
 2. **Review.**
    - Full PR review: viewed state, comment drafts, submitting reviews, merging,

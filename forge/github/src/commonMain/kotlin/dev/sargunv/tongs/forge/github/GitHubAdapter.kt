@@ -13,6 +13,7 @@ import dev.sargunv.tongs.forge.api.InboxHydrator
 import dev.sargunv.tongs.forge.api.InboxSource
 import dev.sargunv.tongs.forge.api.RepoRef
 import dev.sargunv.tongs.forge.api.ReviewSource
+import dev.sargunv.tongs.forge.api.ThreadSource
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
@@ -38,6 +39,8 @@ private class GitHubClient(http: HttpClient, account: Account, token: String) : 
 
   override val inboxHydrator: InboxHydrator? =
     if (inbox != null) GitHubHydrator(http, account.instance, token, account.login) else null
+
+  override val threads: ThreadSource = GitHubThreads(http, account.instance, token)
 
   override val reviews: ReviewSource =
     object : ReviewSource {

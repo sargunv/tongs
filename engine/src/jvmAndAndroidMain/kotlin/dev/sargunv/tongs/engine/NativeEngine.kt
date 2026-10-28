@@ -29,6 +29,17 @@ internal object NativeEngine {
     out: ByteBuffer,
   ): Int
 
+  @JvmStatic external fun fileInfo(handle: Long): ByteArray
+
+  @JvmStatic external fun reviewComplete(handle: Long): Boolean
+
+  @JvmStatic external fun withLayout(handle: Long, collapsed: ByteArray, inserts: IntArray): Long
+
+  @JvmStatic
+  external fun findRow(handle: Long, file: Int, kind: Int, oldLine: Int, newLine: Int): Int
+
+  @JvmStatic external fun lineText(handle: Long, file: Int, side: Int, line: Int): String
+
   @JvmStatic external fun setGrammarDir(dir: String)
 
   @JvmStatic external fun newHighlighter(cacheBytes: Long, threads: Int): Long

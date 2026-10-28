@@ -206,7 +206,7 @@ object TongsIcons {
   }
 }
 
-private fun symbol(name: String, pathData: String): ImageVector =
+internal fun symbol(name: String, pathData: String): ImageVector =
   ImageVector.Builder(
       name = name,
       defaultWidth = 24.dp,

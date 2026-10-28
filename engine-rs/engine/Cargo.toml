@@ -7,7 +7,9 @@ publish.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+bstr = { version = "1.13", default-features = false, features = ["std"] }
 gix-features = { version = "0.50.0", features = ["progress"] }
+gix-glob = "0.29.1"
 gix-hash = { version = "0.28.1", features = ["sha1"] }
 gix-object = "0.66.1"
 gix-odb = "0.87.0"

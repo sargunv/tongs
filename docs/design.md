@@ -162,6 +162,25 @@ The same engine serves PR review, commit view, compare, and the file browser.
      - very long lines
    - CODEOWNERS ownership is matched here too. These are the first few small
      blob fetches.
+   - **As built** (`classify.rs`): the tree walk notes the `.gitattributes` blob
+     in every directory it expands on the head side. Those are exactly the files
+     that can apply to a change, since a changed file's directories all differ.
+     They go out ahead of the first blobs, in a request of their own, and files
+     regroup when they land. `linguist-generated`, `linguist-vendored`, and
+     `-diff` (or `binary`) are read at any depth, deeper files and later lines
+     winning; an explicit attribute beats every heuristic. Then lockfile names,
+     vendored directories, generator suffixes (`.pb.go`, `.g.dart`, `.min.js`,
+     …), and, once a file loads, `@generated` or `DO NOT EDIT` in its first
+     lines or minified content. #760's 300-line `bindings/.gitattributes` groups
+     its generated bindings this way.
+   - **Exact renames,** as built: once the walk ends, each deleted file pairs
+     with an added file of the same blob (not the empty blob). A pure rename
+     needs no blobs and shows as one file, `old → new`. Similarity renames are
+     still to do.
+   - **Display order:** ordinary files first, then generated, lockfiles,
+     vendored, and renamed, each in tree order (a directory's contents before
+     the files beside it). The diff and the file tree share this order, so
+     scrolling one walks the other.
 4. **Blobs, on demand.**
    - Files on screen and in the next two screens go first, in a batch of their
      own. Everything else follows in path order.
@@ -257,10 +276,26 @@ too, through an ANSI-to-token-run adapter, since logs are also huge.
 is monospace, the engine can compute wrapped row counts deterministically from
 display width and column count, so fixed row height still holds.
 
+**Reading layout, as built.** A snapshot can be laid out for reading
+(`Review::with_layout`): collapsed files keep only their header, and inserted
+blocks reserve whole rows under a line. Rows stay fixed-height, so scrolling is
+still division, and a layout is cheap: files are shared, and only the per-file
+row counts are rebuilt. `codeview` composes UI only for the blocks on screen,
+sized to their rows: review threads, pending comments, and the composer. When a
+layout changes, `swapRows` finds the top row by its content (`find_row`), so
+opening a block above the reader doesn't move what they're reading.
+
 **Selection, copy, find, accessibility.**
 
 - Selection is our own: line-range selection is the primary gesture and starts
   the comment flow. Character selection is supported too.
+  - **As built:** a tap on a line number picks the line. A mouse drags across
+    numbers at once; touch long-presses first, so a swipe over the gutter still
+    scrolls. A range stays within one file and one hunk, which is what a forge
+    can anchor. Character selection isn't built yet.
+  - The gutter is as wide as the line numbers shown (at least 3 digits), and
+    only grows, so text doesn't shift back and forth while scrolling. Six digits
+    a side took a third of a folded phone.
 - Find runs in Rust over the text slabs and streams back hits.
 - Accessibility semantics nodes are exposed for visible rows only.
 
@@ -313,6 +348,12 @@ forges.
 and new line numbers, so every adapter can lower it:
 
 - GitHub: `line`/`side`/`start_line`/`start_side`, or `subject_type: file`.
+
+As built, the anchor also carries `startSide`, defaulting to `side`, because a
+range can start on removed lines and end on added ones, which GitHub anchors
+with `start_side: LEFT` and `side: RIGHT`. Forgejo's single-side positions can't
+express that, so its adapter will have to narrow such a range.
+
 - Forgejo: `new_position`/`old_position` plus `extra_lines_count`.
 - GitLab later: `position` with base, start, and head SHAs.
 
@@ -499,6 +540,38 @@ and new line numbers, so every adapter can lower it:
     changes.
   - An overview gutter scales each file by its lines changed.
   - A revision picker supports "since last review" and any commit range.
+  - **As built:**
+    - Layout follows the window: below 560 dp of content the diff takes it all,
+      with the tree in a full-height sheet and a bottom bar for Approve, Request
+      changes, and Finish review. From 560 dp, as on an unfolded foldable beside
+      the rail, the tree is a pane. From 1000 dp, as on desktop, a third pane
+      holds the pending review (its comments, summary, verdict, and submit) and
+      the PR's threads. The tree and review panes toggle from the top bar.
+    - Viewed and generated files collapse in the diff to their header, which
+      shows a chevron, `+a −d`, and a viewed box; tapping the header opens or
+      folds it, and `v` toggles viewed on desktop. Picking a generated file in
+      the tree opens it.
+    - The tree folds single-child chains, eliding long ones in the middle
+      (`bindings/kotlin/…/ffi`), rolls viewed counts up per directory, and
+      follows the diff, unless the reader is scrolling it. Its filter matches
+      each word as a subsequence within one path component (a word with `/`
+      matches across them); plain subsequences matched nearly everything in
+      #760. Flattening runs off the main thread; 2,190 files take a few
+      milliseconds.
+    - Viewed state is optimistic, like inbox triage, and serialized per account
+      so the forge sees toggles in order; a refusal undoes it. Once the file
+      list is complete, the forge's state for the current versions is merged in,
+      leaving pending changes alone.
+    - Existing threads show inline, read-only: resolved ones fold to one line,
+      and a card opens the whole thread in the side pane or a sheet. Comment
+      bodies show as plain text until Markdown rendering lands.
+    - The pending review lives in Room (`changes_draft_comment`,
+      `changes_draft_review`) and goes out as one REST create-review call,
+      pinned to the commit the drafts were written against. On failure it all
+      stays.
+    - The composer is a seam (`CommentComposer`): the inline one reserves rows
+      under the lines; one that reserves none shows in the side pane or a sheet,
+      which suits the thread screen's email-style composer.
 - **Commenting, modeled on email.**
   - The thread keeps the timeline. Its end has Reply and Quote actions rather
     than an always-open text box, and each comment has "Quote reply".
@@ -1260,7 +1333,10 @@ Not covered yet:
    - Android and desktop shells.
 2. **Review.**
    - Full PR review: viewed state, comment drafts, submitting reviews, merging,
-     CI.
+     CI. Built on 2026-10-28: the changes screen with its file tree, viewed
+     state, line comments drafted into a pending review, submitting it, and
+     read-only threads. Not yet: replying to and resolving threads, merging, CI,
+     and the revision picker.
 3. **Repo browser and feed.**
 4. **Forgejo adapter.** Gitea-family core, PAT auth, capability-driven UI.
 5. **Polish and distribution.**

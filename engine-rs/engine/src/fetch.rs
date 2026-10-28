@@ -18,10 +18,11 @@ use std::thread::JoinHandle;
 use anyhow::{Context, Result, anyhow, bail};
 use gix_hash::ObjectId;
 
+use crate::classify::{Attributes, PathAttributes};
 use crate::protocol::{FetchRequest, Filter, PackStream};
 use crate::review::{FileEntry, Review};
 use crate::store::{IngestOutcome, Store};
-use crate::tree_walk::{Change, TreeWalk};
+use crate::tree_walk::{Change, ChangeKind, TreeWalk, pair_renames};
 
 #[derive(Clone, Debug)]
 pub struct FetchOptions {
@@ -103,6 +104,12 @@ struct ReviewLoad {
     visible: Vec<String>,
     /// Whether anything changed since the last snapshot.
     dirty: bool,
+    /// `.gitattributes` files read so far, and what they say per path.
+    attributes: Attributes,
+    path_attributes: HashMap<String, PathAttributes>,
+    /// `.gitattributes` blobs still to fetch, by directory. They go out with
+    /// the first blobs, so files are grouped as soon as their diffs show.
+    attribute_wants: Vec<(String, ObjectId)>,
 }
 
 struct FileSlot {
@@ -162,6 +169,9 @@ impl FetchSession {
             bulk_batches: 0,
             visible: Vec::new(),
             dirty: false,
+            attributes: Attributes::default(),
+            path_attributes: HashMap::new(),
+            attribute_wants: Vec::new(),
         });
         self.advance()
     }
@@ -253,6 +263,13 @@ impl FetchSession {
         let batch = self.options.blob_batch.max(1);
         let mut wants = Vec::new();
         let requested = &mut review.requested_blobs;
+        if blob_requests <= self.options.max_blob_requests {
+            for (_, id) in &review.attribute_wants {
+                if requested.insert(*id) {
+                    wants.push(*id);
+                }
+            }
+        }
         let mut take = |slot: &FileSlot, wants: &mut Vec<ObjectId>, batch: usize| {
             for id in &slot.missing {
                 if wants.len() < batch && requested.insert(*id) {
@@ -333,6 +350,7 @@ impl FetchSession {
                     bail!("the server left out blob {missing}");
                 }
                 if let Some(review) = &mut self.review {
+                    review.attributes_arrived(&self.store)?;
                     review.blobs_arrived(&self.store, &request.wants)?;
                 }
             }
@@ -387,9 +405,16 @@ impl FetchSession {
         let stepped = (|| -> Result<()> {
             while !walk.is_done() && walk.missing(&self.store).is_empty() {
                 walk.step(&self.store)?;
+                for (dir, id) in std::mem::take(&mut walk.attributes) {
+                    review.attribute_wants.push((dir, id));
+                }
+                review.attributes_arrived(&self.store)?;
                 for change in std::mem::take(&mut walk.changes) {
                     review.add_file(&self.store, change)?;
                 }
+            }
+            if walk.is_done() && !review.walk_done {
+                review.pair_renames();
             }
             Ok(())
         })();
@@ -407,15 +432,28 @@ impl FetchSession {
         if !std::mem::take(&mut review.dirty) {
             return None;
         }
-        Some(Review::from_files(
-            review.files.values().map(|s| s.entry.clone()).collect(),
-        ))
+        let files = review
+            .files
+            .values()
+            .map(|slot| {
+                let path = &slot.change.path;
+                let attrs = *review
+                    .path_attributes
+                    .entry(path.clone())
+                    .or_insert_with(|| review.attributes.lookup(path));
+                (slot.entry.clone(), attrs)
+            })
+            .collect();
+        Some(Review::assemble(files, review.walk_done))
     }
 
     /// Whether the review is fully loaded.
     pub fn is_done(&self) -> bool {
         self.review.as_ref().is_some_and(|r| {
-            r.walk_done && r.waiting.is_empty() && r.files.values().all(|s| s.entry.loaded)
+            r.walk_done
+                && r.waiting.is_empty()
+                && r.attribute_wants.is_empty()
+                && r.files.values().all(|s| s.entry.loaded)
         })
     }
 
@@ -444,11 +482,84 @@ impl FetchSession {
 }
 
 impl ReviewLoad {
+    /// Reads every wanted `.gitattributes` blob that's in the store now.
+    fn attributes_arrived(&mut self, store: &Store) -> Result<()> {
+        let mut changed = false;
+        let mut i = 0;
+        while i < self.attribute_wants.len() {
+            let (dir, id) = &self.attribute_wants[i];
+            if store.contains(id) {
+                self.attributes.add(dir, &store.blob(id)?);
+                self.attribute_wants.swap_remove(i);
+                changed = true;
+            } else {
+                i += 1;
+            }
+        }
+        if changed {
+            self.path_attributes.clear();
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
+    /// Once every change is known, turns each identical delete and add into a
+    /// rename, which needs no blobs.
+    fn pair_renames(&mut self) {
+        let mut changes: Vec<Change> = self
+            .files
+            .values()
+            .filter(|s| matches!(s.change.kind, ChangeKind::Added | ChangeKind::Deleted))
+            .map(|s| s.change.clone())
+            .collect();
+        let before: Vec<String> = changes.iter().map(|c| c.path.clone()).collect();
+        pair_renames(&mut changes);
+        if changes.len() == before.len() {
+            return;
+        }
+        let kept: HashSet<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+        let gone = before.iter().filter(|p| !kept.contains(p.as_str()));
+        let renamed = changes.iter().filter(|c| c.kind == ChangeKind::Renamed);
+        let stale: Vec<String> = gone
+            .cloned()
+            .chain(renamed.map(|c| c.path.clone()))
+            .collect();
+        for path in &stale {
+            if let Some(slot) = self.files.get(path) {
+                for id in &slot.missing {
+                    if let Some(paths) = self.waiting.get_mut(id) {
+                        paths.retain(|p| p != path);
+                        if paths.is_empty() {
+                            self.waiting.remove(id);
+                        }
+                    }
+                }
+            }
+        }
+        for path in before.iter().filter(|p| !kept.contains(p.as_str())) {
+            self.files.remove(path);
+        }
+        for change in changes
+            .into_iter()
+            .filter(|c| c.kind == ChangeKind::Renamed)
+        {
+            self.files.insert(
+                change.path.clone(),
+                FileSlot {
+                    entry: Arc::new(FileEntry::pending(&change)),
+                    change,
+                    missing: Vec::new(),
+                },
+            );
+        }
+        self.dirty = true;
+    }
+
     fn add_file(&mut self, store: &Store, change: Change) -> Result<()> {
         let missing: Vec<_> = [change.old, change.new]
             .into_iter()
             .flatten()
-            .filter(|id| !store.contains(id))
+            .filter(|id| FileEntry::needs_blobs(&change) && !store.contains(id))
             .collect();
         let entry = if missing.is_empty() {
             FileEntry::load(store, &change)?
@@ -693,10 +804,11 @@ mod tests {
             .collect()
     }
 
+    /// In display order: directories before the files beside them.
     const EXPECTED: [(&str, u32, u32); 4] = [
         ("a/b/c/deep.txt", 1, 1),
-        ("gone.txt", 0, 1),
         ("new/file.txt", 1, 0),
+        ("gone.txt", 0, 1),
         ("top.txt", 1, 0),
     ];
 
@@ -735,6 +847,84 @@ mod tests {
         let (review, labels) = load(options, "fetch-whole");
         assert_eq!(summary(&review).len(), EXPECTED.len());
         assert_eq!(labels, ["commits ×2 with trees", "blobs ×6"]);
+    }
+
+    #[test]
+    fn groups_files_by_attributes_and_pairs_renames() {
+        let dir = temp_dir("fetch-classify-repo");
+        let repo = &dir.0;
+        git(repo, &["init", "-q", "-b", "main"]);
+        for (key, value) in [
+            ("user.name", "t"),
+            ("user.email", "t@t"),
+            ("uploadpack.allowFilter", "true"),
+            ("uploadpack.allowAnySHA1InWant", "true"),
+        ] {
+            git(repo, &["config", key, value]);
+        }
+        write(
+            repo,
+            "lib/.gitattributes",
+            "/gen.rs linguist-generated=true\n",
+        );
+        write(repo, "lib/gen.rs", "a\n");
+        write(repo, "lib/main.rs", "a\n");
+        write(repo, "old/moved.txt", "same\n");
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "old"]);
+        let old = git(repo, &["rev-parse", "HEAD"]).parse().unwrap();
+        write(repo, "lib/gen.rs", "b\n");
+        write(repo, "lib/main.rs", "b\n");
+        write(repo, "Cargo.lock", "x\n");
+        std::fs::create_dir_all(repo.join("new")).unwrap();
+        std::fs::rename(repo.join("old/moved.txt"), repo.join("new/moved.txt")).unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "new"]);
+        let new = git(repo, &["rev-parse", "HEAD"]).parse().unwrap();
+
+        let store_dir = temp_dir("fetch-classify");
+        let options = FetchOptions {
+            whole_trees_from_depth: Some(0),
+            ..FetchOptions::default()
+        };
+        let mut session = FetchSession::new(Store::open(&store_dir.0).unwrap(), options);
+        session.start_review(old, new).unwrap();
+        let mut labels = Vec::new();
+        let mut last = None;
+        while let Some(request) = session.poll_request() {
+            labels.push(request.label.clone());
+            let mut sink = session.response_sink();
+            serve(repo, &request.body, &mut sink);
+            session
+                .complete(request.id, &sink.finish().unwrap())
+                .unwrap();
+            last = session.snapshot().or(last);
+        }
+        assert!(session.is_done());
+        // The attributes go first, in a request of their own; the rename
+        // needs no blobs, and both `.rs` files share theirs.
+        assert_eq!(
+            labels,
+            ["commits ×2 with trees", "visible blobs ×1", "blobs ×3"]
+        );
+        let review = last.unwrap();
+        let files: Vec<_> = review
+            .files
+            .iter()
+            .zip(&review.classes)
+            .map(|(f, c)| (f.path.as_str(), *c, f.old_path.as_deref()))
+            .collect();
+        use crate::classify::FileClass::*;
+        assert_eq!(
+            files,
+            [
+                ("lib/main.rs", Normal, None),
+                ("lib/gen.rs", Generated, None),
+                ("Cargo.lock", Lockfile, None),
+                ("new/moved.txt", Renamed, Some("old/moved.txt")),
+            ]
+        );
+        assert!(review.complete);
     }
 
     #[test]

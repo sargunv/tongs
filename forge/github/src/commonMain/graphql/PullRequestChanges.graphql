@@ -1,0 +1,98 @@
+# What the PR changes screen reads and writes beyond git objects.
+
+query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      title
+      state
+      url
+      headRefOid
+      viewerDidAuthor
+      author {
+        login
+      }
+      viewerLatestReviewRequest {
+        id
+      }
+      viewerLatestReview {
+        state
+      }
+    }
+  }
+}
+
+query PullRequestReviewThreads(
+  $owner: String!
+  $name: String!
+  $number: Int!
+  $after: String
+) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          path
+          diffSide
+          startDiffSide
+          line
+          startLine
+          originalLine
+          isResolved
+          isOutdated
+          subjectType
+          comments(first: 50) {
+            nodes {
+              id
+              body
+              createdAt
+              author {
+                login
+                avatarUrl
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+query PullRequestViewedFiles(
+  $owner: String!
+  $name: String!
+  $number: Int!
+  $after: String
+) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      files(first: 100, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          path
+          viewerViewedState
+        }
+      }
+    }
+  }
+}
+
+mutation MarkFileAsViewed($pullRequestId: ID!, $path: String!) {
+  markFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path }) {
+    clientMutationId
+  }
+}
+
+mutation UnmarkFileAsViewed($pullRequestId: ID!, $path: String!) {
+  unmarkFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path }) {
+    clientMutationId
+  }
+}

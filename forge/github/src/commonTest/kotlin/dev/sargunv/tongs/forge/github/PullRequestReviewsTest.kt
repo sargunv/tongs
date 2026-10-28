@@ -1,0 +1,183 @@
+package dev.sargunv.tongs.forge.github
+
+import dev.sargunv.tongs.engine.DiffSide
+import dev.sargunv.tongs.forge.api.DraftReviewComment
+import dev.sargunv.tongs.forge.api.FileViewedState
+import dev.sargunv.tongs.forge.api.Instance
+import dev.sargunv.tongs.forge.api.RepoRef
+import dev.sargunv.tongs.forge.api.ReviewAnchor
+import dev.sargunv.tongs.forge.api.ReviewEvent
+import dev.sargunv.tongs.forge.api.ReviewSubmission
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.client.request.HttpRequestData
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
+import io.ktor.http.headersOf
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+
+/** The adapter against a fake GitHub: no request here reaches the real one. */
+class PullRequestReviewsTest {
+  private val requests = mutableListOf<Pair<HttpRequestData, String>>()
+  private val repo = RepoRef("octo", "hello")
+
+  private fun reviews(respond: (HttpRequestData, String) -> Pair<HttpStatusCode, String>) =
+    GitHubPullRequestReviews(
+      HttpClient(
+        MockEngine { request ->
+          val body = (request.body as? OutgoingContent.ByteArrayContent)?.bytes()?.decodeToString()
+          requests += request to body.orEmpty()
+          val (status, text) = respond(request, body.orEmpty())
+          respond(text, status, headersOf(HttpHeaders.ContentType, "application/json"))
+        },
+      ),
+      Instance.GitHubDotCom,
+      "t0ken",
+    )
+
+  private fun JsonObject.str(key: String) = getValue(key).jsonPrimitive.content
+
+  @Test
+  fun lowersAnchorsToLineAndSide() {
+    val single = ReviewAnchor("abc", "src/a.kt", DiffSide.New, 12, 12)
+    assertEquals(GitHubCommentPosition("src/a.kt", 12, "RIGHT"), single.toGitHub())
+    val range = ReviewAnchor("abc", "src/a.kt", DiffSide.Old, 3, 7)
+    assertEquals(GitHubCommentPosition("src/a.kt", 7, "LEFT", 3, "LEFT"), range.toGitHub())
+    // From removed lines into added ones.
+    val mixed = ReviewAnchor("abc", "src/a.kt", DiffSide.New, 4, 5, startSide = DiffSide.Old)
+    assertEquals(GitHubCommentPosition("src/a.kt", 5, "RIGHT", 4, "LEFT"), mixed.toGitHub())
+  }
+
+  @Test
+  fun submitsEveryDraftInOneReview() = runTest {
+    val reviews = reviews { _, _ -> HttpStatusCode.OK to """{"id": 1}""" }
+    reviews.submitReview(
+      repo,
+      7,
+      ReviewSubmission(
+        commitOid = "headsha",
+        event = ReviewEvent.RequestChanges,
+        body = "A few things.",
+        comments =
+          listOf(
+            DraftReviewComment(ReviewAnchor("headsha", "a.kt", DiffSide.New, 2, 2), "Rename this"),
+            DraftReviewComment(
+              ReviewAnchor("headsha", "b.kt", DiffSide.New, 4, 6),
+              "```suggestion\nfoo()\n```",
+            ),
+          ),
+      ),
+    )
+    val (request, body) = requests.single()
+    assertEquals(HttpMethod.Post, request.method)
+    assertEquals("https://api.github.com/repos/octo/hello/pulls/7/reviews", request.url.toString())
+    assertEquals("Bearer t0ken", request.headers[HttpHeaders.Authorization])
+    val json = Json.parseToJsonElement(body).jsonObject
+    assertEquals("headsha", json.str("commit_id"))
+    assertEquals("REQUEST_CHANGES", json.str("event"))
+    assertEquals("A few things.", json.str("body"))
+    assertEquals(
+      Json.parseToJsonElement(
+        """
+        [
+          {"path": "a.kt", "body": "Rename this", "line": 2, "side": "RIGHT"},
+          {"path": "b.kt", "body": "```suggestion\nfoo()\n```", "line": 6, "side": "RIGHT",
+           "start_line": 4, "start_side": "RIGHT"}
+        ]
+        """,
+      ),
+      json.getValue("comments"),
+    )
+  }
+
+  @Test
+  fun leavesOutAnEmptySummary() = runTest {
+    val reviews = reviews { _, _ -> HttpStatusCode.OK to "{}" }
+    reviews.submitReview(repo, 7, ReviewSubmission("sha", ReviewEvent.Approve, " ", emptyList()))
+    val json = Json.parseToJsonElement(requests.single().second).jsonObject
+    assertEquals("APPROVE", json.str("event"))
+    assertTrue("body" !in json)
+  }
+
+  @Test
+  fun surfacesARejectedReview() = runTest {
+    val reviews = reviews { _, _ ->
+      HttpStatusCode.UnprocessableEntity to """{"message": "Line could not be resolved"}"""
+    }
+    val error =
+      assertFailsWith<Exception> {
+        reviews.submitReview(
+          repo,
+          7,
+          ReviewSubmission("sha", ReviewEvent.Comment, "x", emptyList()),
+        )
+      }
+    assertTrue("Line could not be resolved" in error.message.orEmpty(), error.message)
+  }
+
+  @Test
+  fun marksAndUnmarksViewedThroughGraphQl() = runTest {
+    val reviews = reviews { _, _ ->
+      HttpStatusCode.OK to
+        """{"data": {"markFileAsViewed": {"clientMutationId": null},
+        "unmarkFileAsViewed": {"clientMutationId": null}}}"""
+    }
+    reviews.setViewed("PR_1", "src/a.kt", viewed = true)
+    reviews.setViewed("PR_1", "src/a.kt", viewed = false)
+    val (mark, unmark) = requests.map { Json.parseToJsonElement(it.second).jsonObject }
+    assertEquals("https://api.github.com/graphql", requests[0].first.url.toString())
+    assertEquals("MarkFileAsViewed", mark.str("operationName"))
+    assertEquals("UnmarkFileAsViewed", unmark.str("operationName"))
+    val variables = mark.getValue("variables").jsonObject
+    assertEquals("PR_1", variables.str("pullRequestId"))
+    assertEquals("src/a.kt", variables.str("path"))
+  }
+
+  @Test
+  fun readsThreadsAndViewedStateAcrossPages() = runTest {
+    val reviews = reviews { _, body ->
+      val variables = Json.parseToJsonElement(body).jsonObject.getValue("variables").jsonObject
+      val second = "after" in variables
+      when {
+        "PullRequestReviewThreads" in body ->
+          HttpStatusCode.OK to
+            """{"data": {"repository": {"pullRequest": {"reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
+              "nodes": [{"id": "T1", "path": "a.kt", "diffSide": "LEFT", "startDiffSide": null,
+                "line": 3, "startLine": null, "originalLine": 3, "isResolved": true,
+                "isOutdated": false, "subjectType": "LINE",
+                "comments": {"nodes": [{"id": "C1", "body": "Why?",
+                  "createdAt": "2026-10-28T12:00:00Z",
+                  "author": {"__typename": "User", "login": "octocat", "avatarUrl": "https://a"}}]}}]
+            }}}}}"""
+        else ->
+          HttpStatusCode.OK to
+            """{"data": {"repository": {"pullRequest": {"files": {
+              "pageInfo": {"hasNextPage": ${!second}, "endCursor": ${if (second) "null" else "\"c1\""}},
+              "nodes": [{"path": "${if (second) "b.kt" else "a.kt"}",
+                "viewerViewedState": "${if (second) "DISMISSED" else "VIEWED"}"}]
+            }}}}}"""
+      }
+    }
+    val thread = reviews.threads(repo, 7).single()
+    assertEquals(DiffSide.Old, thread.side)
+    assertEquals(3, thread.line)
+    assertTrue(thread.isResolved)
+    assertEquals("octocat", thread.comments.single().authorLogin)
+    assertEquals(
+      mapOf("a.kt" to FileViewedState.Viewed, "b.kt" to FileViewedState.Dismissed),
+      reviews.viewedFiles(repo, 7),
+    )
+  }
+}

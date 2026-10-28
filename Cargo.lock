@@ -493,6 +493,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-glob"
+version = "0.29.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a12789fa68a150293ad8834d267b31044240532b5ccf2734d228fe985cba2be"
+dependencies = [
+ "bitflags 2.13.2",
+ "bstr",
+ "gix-fs",
+ "gix-path",
+ "gix-trace 0.3.1",
+ "gix-utils",
+]
+
+[[package]]
 name = "gix-hash"
 version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1601,7 +1615,9 @@ name = "tongs-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bstr",
  "gix-features",
+ "gix-glob",
  "gix-hash",
  "gix-object",
  "gix-odb",

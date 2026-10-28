@@ -139,9 +139,8 @@ data class InboxRow(
   /** When it comes back, if it's snoozed; a past time if it already has. */
   val snoozedUntil: Long?,
   /**
-   * The start of an unsent reply drafted on this thread, shown on its row like an email draft.
-   * Always null for now: drafts belong to the thread feature, which fills this in once it stores
-   * them, by joining its table in [InboxDao]'s row queries.
+   * The start of an unsent reply drafted on this thread, shown on its row like an email draft: the
+   * most recent of its [DraftEntity]s, in any slot.
    */
   val draft: String? = null,
 )
@@ -152,7 +151,11 @@ private const val ROW_COLUMNS =
   t.accountId, a.login AS accountLogin, t.id, t.repoOwner, t.repoName, t.title, t.subjectType,
   t.subjectNumber, t.webUrl, t.reason, (t.unread OR t.localUnread) AS isUnread, t.updatedAt,
   MAX(t.updatedAt, COALESCE(t.snoozedUntil, 0)) AS sortAt, t.subjectState, t.whatsNew,
-  t.stateReason, t.isDraft, t.checks, t.reviewDecision, t.snoozedUntil, NULL AS draft
+  t.stateReason, t.isDraft, t.checks, t.reviewDecision, t.snoozedUntil,
+  (SELECT substr(d.body, 1, 200) FROM draft d
+    WHERE d.accountId = t.accountId AND d.repoOwner = t.repoOwner AND d.repoName = t.repoName
+      AND d.number = t.subjectNumber
+    ORDER BY d.updatedAt DESC LIMIT 1) AS draft
   """
 
 @Dao

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tongs_engine::review::{Review, TAB};
 
 mod fetch;
+mod snippet;
 use tongs_engine::store::Store;
 use tongs_highlight::file::project;
 use tongs_highlight::languages::Lang;

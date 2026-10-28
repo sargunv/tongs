@@ -1,0 +1,996 @@
+# Issue and PR conversations, for GitHubThreads. Names start with `Thread` so they stay apart from
+# other features' operations and fragments, which share one namespace.
+#
+# The timeline asks only for item types the neutral model has (comments, reviews, commits, and each
+# EventKind), so `filteredCount` counts what the thread can show. The lists below repeat because
+# GraphQL fragments can't take arguments; keep them in sync.
+
+query Thread(
+  $owner: String!
+  $name: String!
+  $number: Int!
+  $headCount: Int!
+  $tailCount: Int!
+) {
+  repository(owner: $owner, name: $name) {
+    viewerPermission
+    mergeCommitAllowed
+    squashMergeAllowed
+    rebaseMergeAllowed
+    viewerDefaultMergeMethod
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue {
+        ...ThreadIssue
+        head: timelineItems(
+          first: $headCount
+          itemTypes: [
+            ISSUE_COMMENT
+            LABELED_EVENT
+            UNLABELED_EVENT
+            ASSIGNED_EVENT
+            UNASSIGNED_EVENT
+            CLOSED_EVENT
+            REOPENED_EVENT
+            CROSS_REFERENCED_EVENT
+            REFERENCED_EVENT
+            RENAMED_TITLE_EVENT
+            MILESTONED_EVENT
+            DEMILESTONED_EVENT
+            MARKED_AS_DUPLICATE_EVENT
+            LOCKED_EVENT
+            UNLOCKED_EVENT
+          ]
+        ) {
+          ...ThreadIssueTimeline
+        }
+        tail: timelineItems(
+          last: $tailCount
+          itemTypes: [
+            ISSUE_COMMENT
+            LABELED_EVENT
+            UNLABELED_EVENT
+            ASSIGNED_EVENT
+            UNASSIGNED_EVENT
+            CLOSED_EVENT
+            REOPENED_EVENT
+            CROSS_REFERENCED_EVENT
+            REFERENCED_EVENT
+            RENAMED_TITLE_EVENT
+            MILESTONED_EVENT
+            DEMILESTONED_EVENT
+            MARKED_AS_DUPLICATE_EVENT
+            LOCKED_EVENT
+            UNLOCKED_EVENT
+          ]
+        ) {
+          ...ThreadIssueTimeline
+        }
+      }
+      ... on PullRequest {
+        ...ThreadPullRequest
+        head: timelineItems(
+          first: $headCount
+          itemTypes: [
+            ISSUE_COMMENT
+            PULL_REQUEST_REVIEW
+            PULL_REQUEST_COMMIT
+            LABELED_EVENT
+            UNLABELED_EVENT
+            ASSIGNED_EVENT
+            UNASSIGNED_EVENT
+            CLOSED_EVENT
+            REOPENED_EVENT
+            MERGED_EVENT
+            CROSS_REFERENCED_EVENT
+            REFERENCED_EVENT
+            RENAMED_TITLE_EVENT
+            REVIEW_REQUESTED_EVENT
+            REVIEW_REQUEST_REMOVED_EVENT
+            REVIEW_DISMISSED_EVENT
+            HEAD_REF_FORCE_PUSHED_EVENT
+            HEAD_REF_DELETED_EVENT
+            READY_FOR_REVIEW_EVENT
+            CONVERT_TO_DRAFT_EVENT
+            MILESTONED_EVENT
+            DEMILESTONED_EVENT
+            MARKED_AS_DUPLICATE_EVENT
+            LOCKED_EVENT
+            UNLOCKED_EVENT
+            BASE_REF_CHANGED_EVENT
+            AUTO_MERGE_ENABLED_EVENT
+            AUTO_MERGE_DISABLED_EVENT
+          ]
+        ) {
+          ...ThreadPullRequestTimeline
+        }
+        tail: timelineItems(
+          last: $tailCount
+          itemTypes: [
+            ISSUE_COMMENT
+            PULL_REQUEST_REVIEW
+            PULL_REQUEST_COMMIT
+            LABELED_EVENT
+            UNLABELED_EVENT
+            ASSIGNED_EVENT
+            UNASSIGNED_EVENT
+            CLOSED_EVENT
+            REOPENED_EVENT
+            MERGED_EVENT
+            CROSS_REFERENCED_EVENT
+            REFERENCED_EVENT
+            RENAMED_TITLE_EVENT
+            REVIEW_REQUESTED_EVENT
+            REVIEW_REQUEST_REMOVED_EVENT
+            REVIEW_DISMISSED_EVENT
+            HEAD_REF_FORCE_PUSHED_EVENT
+            HEAD_REF_DELETED_EVENT
+            READY_FOR_REVIEW_EVENT
+            CONVERT_TO_DRAFT_EVENT
+            MILESTONED_EVENT
+            DEMILESTONED_EVENT
+            MARKED_AS_DUPLICATE_EVENT
+            LOCKED_EVENT
+            UNLOCKED_EVENT
+            BASE_REF_CHANGED_EVENT
+            AUTO_MERGE_ENABLED_EVENT
+            AUTO_MERGE_DISABLED_EVENT
+          ]
+        ) {
+          ...ThreadPullRequestTimeline
+        }
+        reviewThreads(last: 100) {
+          nodes {
+            ...ThreadReviewThread
+          }
+        }
+      }
+    }
+  }
+}
+
+query ThreadTimeline(
+  $owner: String!
+  $name: String!
+  $number: Int!
+  $cursor: String!
+  $count: Int!
+) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue {
+        timelineItems(
+          first: $count
+          after: $cursor
+          itemTypes: [
+            ISSUE_COMMENT
+            LABELED_EVENT
+            UNLABELED_EVENT
+            ASSIGNED_EVENT
+            UNASSIGNED_EVENT
+            CLOSED_EVENT
+            REOPENED_EVENT
+            CROSS_REFERENCED_EVENT
+            REFERENCED_EVENT
+            RENAMED_TITLE_EVENT
+            MILESTONED_EVENT
+            DEMILESTONED_EVENT
+            MARKED_AS_DUPLICATE_EVENT
+            LOCKED_EVENT
+            UNLOCKED_EVENT
+          ]
+        ) {
+          ...ThreadIssueTimeline
+        }
+      }
+      ... on PullRequest {
+        timelineItems(
+          first: $count
+          after: $cursor
+          itemTypes: [
+            ISSUE_COMMENT
+            PULL_REQUEST_REVIEW
+            PULL_REQUEST_COMMIT
+            LABELED_EVENT
+            UNLABELED_EVENT
+            ASSIGNED_EVENT
+            UNASSIGNED_EVENT
+            CLOSED_EVENT
+            REOPENED_EVENT
+            MERGED_EVENT
+            CROSS_REFERENCED_EVENT
+            REFERENCED_EVENT
+            RENAMED_TITLE_EVENT
+            REVIEW_REQUESTED_EVENT
+            REVIEW_REQUEST_REMOVED_EVENT
+            REVIEW_DISMISSED_EVENT
+            HEAD_REF_FORCE_PUSHED_EVENT
+            HEAD_REF_DELETED_EVENT
+            READY_FOR_REVIEW_EVENT
+            CONVERT_TO_DRAFT_EVENT
+            MILESTONED_EVENT
+            DEMILESTONED_EVENT
+            MARKED_AS_DUPLICATE_EVENT
+            LOCKED_EVENT
+            UNLOCKED_EVENT
+            BASE_REF_CHANGED_EVENT
+            AUTO_MERGE_ENABLED_EVENT
+            AUTO_MERGE_DISABLED_EVENT
+          ]
+        ) {
+          ...ThreadPullRequestTimeline
+        }
+      }
+    }
+  }
+}
+
+# Pages through a PR's files to count those the viewer marked viewed.
+query ThreadPullRequestFiles(
+  $owner: String!
+  $name: String!
+  $number: Int!
+  $cursor: String
+) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      files(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          viewerViewedState
+        }
+      }
+    }
+  }
+}
+
+mutation ThreadAddComment($subjectId: ID!, $body: String!) {
+  addComment(input: { subjectId: $subjectId, body: $body }) {
+    commentEdge {
+      node {
+        ...ThreadComment
+      }
+    }
+  }
+}
+
+mutation ThreadCloseIssue($id: ID!, $reason: IssueClosedStateReason) {
+  closeIssue(input: { issueId: $id, stateReason: $reason }) {
+    issue {
+      id
+    }
+  }
+}
+
+mutation ThreadClosePullRequest($id: ID!) {
+  closePullRequest(input: { pullRequestId: $id }) {
+    pullRequest {
+      id
+    }
+  }
+}
+
+mutation ThreadReopenIssue($id: ID!) {
+  reopenIssue(input: { issueId: $id }) {
+    issue {
+      id
+    }
+  }
+}
+
+mutation ThreadReopenPullRequest($id: ID!) {
+  reopenPullRequest(input: { pullRequestId: $id }) {
+    pullRequest {
+      id
+    }
+  }
+}
+
+mutation ThreadAddReaction($id: ID!, $content: ReactionContent!) {
+  addReaction(input: { subjectId: $id, content: $content }) {
+    reaction {
+      content
+    }
+  }
+}
+
+mutation ThreadRemoveReaction($id: ID!, $content: ReactionContent!) {
+  removeReaction(input: { subjectId: $id, content: $content }) {
+    reaction {
+      content
+    }
+  }
+}
+
+mutation ThreadMerge(
+  $id: ID!
+  $method: PullRequestMergeMethod!
+  $expectedHeadOid: GitObjectID!
+) {
+  mergePullRequest(
+    input: {
+      pullRequestId: $id
+      mergeMethod: $method
+      expectedHeadOid: $expectedHeadOid
+    }
+  ) {
+    pullRequest {
+      id
+      merged
+    }
+  }
+}
+
+# The thread itself.
+
+fragment ThreadIssue on Issue {
+  id
+  number
+  title
+  body
+  url
+  createdAt
+  updatedAt
+  lastEditedAt
+  issueState: state
+  stateReason
+  locked
+  author {
+    ...ThreadActor
+  }
+  labels(first: 30) {
+    nodes {
+      ...ThreadLabel
+    }
+  }
+  assignees(first: 20) {
+    nodes {
+      ...ThreadActor
+    }
+  }
+  milestone {
+    title
+  }
+  reactionGroups {
+    ...ThreadReactions
+  }
+  comments {
+    totalCount
+  }
+  viewerCanUpdate
+  viewerCanReact
+  viewerCanClose
+  viewerCanReopen
+}
+
+fragment ThreadPullRequest on PullRequest {
+  id
+  number
+  title
+  body
+  url
+  createdAt
+  updatedAt
+  lastEditedAt
+  pullRequestState: state
+  locked
+  isDraft
+  author {
+    ...ThreadActor
+  }
+  labels(first: 30) {
+    nodes {
+      ...ThreadLabel
+    }
+  }
+  assignees(first: 20) {
+    nodes {
+      ...ThreadActor
+    }
+  }
+  milestone {
+    title
+  }
+  reactionGroups {
+    ...ThreadReactions
+  }
+  comments {
+    totalCount
+  }
+  viewerCanUpdate
+  viewerCanReact
+  viewerCanClose
+  viewerCanReopen
+  baseRefName
+  headRefName
+  headRefOid
+  isCrossRepository
+  headRepositoryOwner {
+    login
+  }
+  additions
+  deletions
+  changedFiles
+  commits {
+    totalCount
+  }
+  reviewDecision
+  mergeable
+  mergeStateStatus
+  mergedAt
+  mergedBy {
+    ...ThreadActor
+  }
+  autoMergeRequest {
+    enabledAt
+  }
+  latestOpinionatedReviews(first: 20) {
+    nodes {
+      author {
+        ...ThreadActor
+      }
+      state
+    }
+  }
+  reviewRequests(first: 20) {
+    nodes {
+      requestedReviewer {
+        __typename
+        ... on User {
+          login
+        }
+        ... on Bot {
+          login
+        }
+        ... on Mannequin {
+          login
+        }
+        ... on Team {
+          combinedSlug
+        }
+        ... on EnterpriseTeam {
+          name
+        }
+      }
+    }
+  }
+  statusCheckRollup {
+    state
+    contexts(first: 100) {
+      checkRunCountsByState {
+        state
+        count
+      }
+      statusContextCountsByState {
+        state
+        count
+      }
+      nodes {
+        __typename
+        ... on CheckRun {
+          name
+          status
+          conclusion
+          detailsUrl
+          title
+          checkSuite {
+            workflowRun {
+              workflow {
+                name
+              }
+            }
+          }
+        }
+        ... on StatusContext {
+          context
+          state
+          targetUrl
+          description
+        }
+      }
+    }
+  }
+}
+
+fragment ThreadReviewThread on PullRequestReviewThread {
+  id
+  path
+  line
+  originalLine
+  isResolved
+  isOutdated
+  comments(first: 30) {
+    totalCount
+    nodes {
+      ...ThreadReviewComment
+    }
+  }
+}
+
+fragment ThreadReviewComment on PullRequestReviewComment {
+  id
+  createdAt
+  author {
+    ...ThreadActor
+  }
+  body
+  lastEditedAt
+  url
+  viewerCanReact
+  isMinimized
+  minimizedReason
+  reactionGroups {
+    ...ThreadReactions
+  }
+  diffHunk
+  pullRequestReview {
+    id
+  }
+}
+
+# Timelines. The two connections are different types, so each has its own fragment over the same
+# per-item fragments.
+
+fragment ThreadIssueTimeline on IssueTimelineItemsConnection {
+  filteredCount
+  pageInfo {
+    ...ThreadPageInfo
+  }
+  nodes {
+    __typename
+    ...ThreadComment
+    ...ThreadLabeled
+    ...ThreadUnlabeled
+    ...ThreadAssigned
+    ...ThreadUnassigned
+    ...ThreadClosed
+    ...ThreadReopened
+    ...ThreadCrossReferenced
+    ...ThreadReferenced
+    ...ThreadRenamed
+    ...ThreadMilestoned
+    ...ThreadDemilestoned
+    ...ThreadMarkedAsDuplicate
+    ...ThreadLocked
+    ...ThreadUnlocked
+  }
+}
+
+fragment ThreadPullRequestTimeline on PullRequestTimelineItemsConnection {
+  filteredCount
+  pageInfo {
+    ...ThreadPageInfo
+  }
+  nodes {
+    __typename
+    ...ThreadComment
+    ...ThreadReview
+    ...ThreadCommit
+    ...ThreadLabeled
+    ...ThreadUnlabeled
+    ...ThreadAssigned
+    ...ThreadUnassigned
+    ...ThreadClosed
+    ...ThreadReopened
+    ...ThreadMerged
+    ...ThreadCrossReferenced
+    ...ThreadReferenced
+    ...ThreadRenamed
+    ...ThreadReviewRequested
+    ...ThreadReviewRequestRemoved
+    ...ThreadReviewDismissed
+    ...ThreadHeadRefForcePushed
+    ...ThreadHeadRefDeleted
+    ...ThreadReadyForReview
+    ...ThreadConvertToDraft
+    ...ThreadMilestoned
+    ...ThreadDemilestoned
+    ...ThreadMarkedAsDuplicate
+    ...ThreadLocked
+    ...ThreadUnlocked
+    ...ThreadBaseRefChanged
+    ...ThreadAutoMergeEnabled
+    ...ThreadAutoMergeDisabled
+  }
+}
+
+fragment ThreadPageInfo on PageInfo {
+  startCursor
+  endCursor
+  hasPreviousPage
+  hasNextPage
+}
+
+# Shared pieces.
+
+fragment ThreadActor on Actor {
+  __typename
+  login
+  avatarUrl
+}
+
+fragment ThreadLabel on Label {
+  name
+  color
+  description
+}
+
+fragment ThreadReactions on ReactionGroup {
+  content
+  viewerHasReacted
+  reactors {
+    totalCount
+  }
+}
+
+fragment ThreadReference on IssueOrPullRequest {
+  __typename
+  ... on Issue {
+    number
+    title
+    url
+    issueState: state
+    repository {
+      ...ThreadRepo
+    }
+  }
+  ... on PullRequest {
+    number
+    title
+    url
+    pullRequestState: state
+    repository {
+      ...ThreadRepo
+    }
+  }
+}
+
+fragment ThreadRepo on Repository {
+  name
+  owner {
+    login
+  }
+}
+
+# Timeline items.
+
+fragment ThreadComment on IssueComment {
+  id
+  createdAt
+  author {
+    ...ThreadActor
+  }
+  body
+  lastEditedAt
+  url
+  viewerCanReact
+  isMinimized
+  minimizedReason
+  reactionGroups {
+    ...ThreadReactions
+  }
+}
+
+fragment ThreadReview on PullRequestReview {
+  id
+  createdAt
+  submittedAt
+  author {
+    ...ThreadActor
+  }
+  state
+  body
+  url
+  viewerCanReact
+  reactionGroups {
+    ...ThreadReactions
+  }
+}
+
+fragment ThreadCommit on PullRequestCommit {
+  id
+  url
+  commit {
+    oid
+    messageHeadline
+    committedDate
+    author {
+      name
+      user {
+        ...ThreadActor
+      }
+    }
+    statusCheckRollup {
+      state
+    }
+  }
+}
+
+fragment ThreadLabeled on LabeledEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  label {
+    ...ThreadLabel
+  }
+}
+
+fragment ThreadUnlabeled on UnlabeledEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  label {
+    ...ThreadLabel
+  }
+}
+
+fragment ThreadAssigned on AssignedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  assignee {
+    ...ThreadActor
+  }
+}
+
+fragment ThreadUnassigned on UnassignedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  assignee {
+    ...ThreadActor
+  }
+}
+
+fragment ThreadClosed on ClosedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  stateReason
+  closer {
+    __typename
+    ... on Commit {
+      oid
+    }
+    ... on PullRequest {
+      ...ThreadReference
+    }
+  }
+}
+
+fragment ThreadReopened on ReopenedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  stateReason
+}
+
+fragment ThreadMerged on MergedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  mergeRefName
+  mergeCommit: commit {
+    oid
+  }
+}
+
+fragment ThreadCrossReferenced on CrossReferencedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  willCloseTarget
+  source {
+    ...ThreadReference
+  }
+}
+
+fragment ThreadReferenced on ReferencedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  referencedCommit: commit {
+    oid
+    messageHeadline
+  }
+}
+
+fragment ThreadRenamed on RenamedTitleEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  previousTitle
+  currentTitle
+}
+
+fragment ThreadReviewRequested on ReviewRequestedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  requestedReviewer {
+    ...ThreadReviewer
+  }
+}
+
+fragment ThreadReviewRequestRemoved on ReviewRequestRemovedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  requestedReviewer {
+    ...ThreadReviewer
+  }
+}
+
+fragment ThreadReviewer on RequestedReviewer {
+  __typename
+  ... on User {
+    login
+  }
+  ... on Bot {
+    login
+  }
+  ... on Mannequin {
+    login
+  }
+  ... on Team {
+    combinedSlug
+  }
+  ... on EnterpriseTeam {
+    name
+  }
+}
+
+fragment ThreadReviewDismissed on ReviewDismissedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  review {
+    author {
+      login
+    }
+  }
+}
+
+fragment ThreadHeadRefForcePushed on HeadRefForcePushedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  ref {
+    name
+  }
+  beforeCommit {
+    oid
+  }
+  afterCommit {
+    oid
+  }
+}
+
+fragment ThreadHeadRefDeleted on HeadRefDeletedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  headRefName
+}
+
+fragment ThreadReadyForReview on ReadyForReviewEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+}
+
+fragment ThreadConvertToDraft on ConvertToDraftEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+}
+
+fragment ThreadMilestoned on MilestonedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  milestoneTitle
+}
+
+fragment ThreadDemilestoned on DemilestonedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  milestoneTitle
+}
+
+fragment ThreadMarkedAsDuplicate on MarkedAsDuplicateEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  canonical {
+    ...ThreadReference
+  }
+}
+
+fragment ThreadLocked on LockedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  lockReason
+}
+
+fragment ThreadUnlocked on UnlockedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+}
+
+fragment ThreadBaseRefChanged on BaseRefChangedEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+  previousRefName
+  currentRefName
+}
+
+fragment ThreadAutoMergeEnabled on AutoMergeEnabledEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+}
+
+fragment ThreadAutoMergeDisabled on AutoMergeDisabledEvent {
+  id
+  createdAt
+  actor {
+    ...ThreadActor
+  }
+}

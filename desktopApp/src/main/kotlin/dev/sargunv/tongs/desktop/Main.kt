@@ -27,6 +27,8 @@ import org.jetbrains.skia.EncodedImageFormat
  * - `--pr owner/repo#number [--store=dir] [--exit-when-loaded] [--jump=fraction] [--no-highlight]`
  *   fetches a PR in-app without an account; see [runPullRequest].
  * - `--app-screenshots=dir` renders the app's main screens offscreen; see [renderAppScreenshots].
+ * - `--thread-screenshots=dir owner/repo#number…` renders public threads and the composer
+ *   offscreen; see [renderThreadScreenshots].
  */
 fun main(args: Array<String>) {
   val spike =
@@ -38,7 +40,15 @@ fun main(args: Array<String>) {
     val shots = args.firstNotNullOfOrNull {
       it.removePrefix("--app-screenshots=").takeIf { s -> s != it }
     }
-    if (shots != null) renderAppScreenshots(File(shots)) else runApp()
+    val threadShots = args.firstNotNullOfOrNull {
+      it.removePrefix("--thread-screenshots=").takeIf { s -> s != it }
+    }
+    when {
+      threadShots != null ->
+        renderThreadScreenshots(File(threadShots), args.filterNot { it.startsWith("--") })
+      shots != null -> renderAppScreenshots(File(shots))
+      else -> runApp()
+    }
     return
   }
   val highlighter = if ("--no-highlight" in args) null else Highlighter()

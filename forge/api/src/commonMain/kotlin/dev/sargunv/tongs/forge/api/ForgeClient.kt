@@ -24,6 +24,10 @@ interface ForgeClient : AutoCloseable {
     get() = null
 
   val reviews: ReviewSource?
+
+  /** Issue and PR conversations. */
+  val threads: ThreadSource?
+    get() = null
 }
 
 /** Loads PR changes from git objects; see `docs/design.md`'s code engine pipeline. */

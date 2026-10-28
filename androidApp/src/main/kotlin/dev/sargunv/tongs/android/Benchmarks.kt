@@ -8,18 +8,33 @@ import android.view.FrameMetrics
 import android.view.Window
 import androidx.compose.runtime.withFrameNanos
 import dev.sargunv.tongs.codeview.CodeViewState
+import dev.sargunv.tongs.engine.Highlighter
 import kotlinx.coroutines.delay
 
-/** The same passes as `desktopApp --bench`. */
-internal suspend fun runBenchmarks(state: CodeViewState, window: Window) {
+/**
+ * The same passes as `desktopApp --bench`. With highlighting, each runs twice: cold, while the
+ * highlights land, then warm, from the cache.
+ */
+internal suspend fun runBenchmarks(
+  state: CodeViewState,
+  window: Window,
+  highlighter: Highlighter?,
+) {
   delay(1500)
-  benchmark("fling: 200 px/frame for 3000 frames", state, window, frames = 3000) {
-    state.scrollBy(200.0)
+  val passes = if (highlighter != null) listOf("cold", "warm") else listOf("plain")
+  for (pass in passes) {
+    state.scrollToRow(0)
+    benchmark("fling ($pass): 200 px/frame for 3000 frames", state, window, frames = 3000) {
+      state.scrollBy(200.0)
+    }
   }
-  state.scrollToRow(0)
-  benchmark("scrub: whole review in 600 frames", state, window, frames = 600) {
-    state.scrollBy(state.maxOffsetY / 600)
+  for (pass in passes) {
+    state.scrollToRow(0)
+    benchmark("scrub ($pass): whole review in 600 frames", state, window, frames = 600) {
+      state.scrollBy(state.maxOffsetY / 600)
+    }
   }
+  highlighter?.let { Log.i(TAG, "highlight cache: ${it.cacheBytes shr 20} MiB") }
   val runtime = Runtime.getRuntime()
   System.gc()
   Log.i(
@@ -64,6 +79,14 @@ private suspend fun benchmark(
   Log.i(TAG, "  frame interval  ${summary(intervals)}, $missed vsyncs missed")
   Log.i(TAG, "  draw CPU        ${summary(state.stats.drawNanos)}")
   if (fetches.isNotEmpty()) Log.i(TAG, "  row fetch (${fetches.size}x)  ${summary(fetches)}")
+  val stats = state.stats
+  if (stats.rowsPending > 0) {
+    Log.i(
+      TAG,
+      "  rows drawn plain while highlighting  %.1f%%"
+        .format(100.0 * stats.rowsPending / stats.rowsDrawn),
+    )
+  }
   synchronized(hwui) {
     Log.i(TAG, "  UI thread       ${summary(hwui.uiThread)}")
     Log.i(TAG, "  RenderThread    ${summary(hwui.renderThread)}")

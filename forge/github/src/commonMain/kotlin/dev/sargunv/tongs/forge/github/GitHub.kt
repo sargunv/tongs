@@ -50,10 +50,13 @@ class PullRequest(
 /**
  * The GitHub REST calls a review needs, and git smart HTTP to the same host. Bring your own
  * [HttpClient]; the app picks the engine.
+ *
+ * Without a [token], public repos still work: git fetches need no auth, and REST allows 60 requests
+ * an hour per IP, two per review.
  */
 class GitHub(
   private val http: HttpClient,
-  private val token: String,
+  private val token: String?,
   private val apiUrl: String = "https://api.github.com",
   private val webUrl: String = "https://github.com",
 ) {
@@ -81,7 +84,7 @@ class GitHub(
   private suspend fun api(path: String): String {
     val response =
       http.get("$apiUrl/$path") {
-        header(HttpHeaders.Authorization, "Bearer $token")
+        if (token != null) header(HttpHeaders.Authorization, "Bearer $token")
         header(HttpHeaders.Accept, "application/vnd.github+json")
         header("X-GitHub-Api-Version", "2026-03-10")
       }
@@ -96,13 +99,15 @@ class GitHub(
   suspend fun warmUp(owner: String, repo: String) {
     runCatching {
       http.get("$webUrl/$owner/$repo.git/info/refs?service=git-upload-pack") {
-        header(HttpHeaders.Authorization, basicAuth)
+        basicAuth?.let { header(HttpHeaders.Authorization, it) }
         header("Git-Protocol", "version=2")
       }
     }
   }
 
-  private val basicAuth = "Basic " + Base64.encode("x-access-token:$token".encodeToByteArray())
+  private val basicAuth = token?.let {
+    "Basic " + Base64.encode("x-access-token:$it".encodeToByteArray())
+  }
 
   /** Git protocol v2 `fetch` against the repo's smart-HTTP endpoint, streaming the response. */
   fun git(owner: String, repo: String): GitTransport {
@@ -110,7 +115,7 @@ class GitHub(
     return GitTransport { body, onChunk ->
       http
         .preparePost(url) {
-          header(HttpHeaders.Authorization, basicAuth)
+          basicAuth?.let { header(HttpHeaders.Authorization, it) }
           header("Git-Protocol", "version=2")
           accept(ContentType("application", "x-git-upload-pack-result"))
           setBody(ByteArrayContent(body, ContentType("application", "x-git-upload-pack-request")))

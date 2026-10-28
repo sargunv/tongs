@@ -31,8 +31,7 @@ android {
 }
 
 dependencies {
-  implementation(project(":engine"))
-  implementation(project(":codeview"))
+  implementation(project(":feature:review"))
   implementation(libs.androidx.activity.compose)
   implementation(libs.compose.foundation)
 }

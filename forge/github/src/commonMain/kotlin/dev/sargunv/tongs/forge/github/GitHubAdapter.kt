@@ -9,6 +9,7 @@ import dev.sargunv.tongs.forge.api.ForgeAdapter
 import dev.sargunv.tongs.forge.api.ForgeClient
 import dev.sargunv.tongs.forge.api.ForgeKind
 import dev.sargunv.tongs.forge.api.ForgeKindKey
+import dev.sargunv.tongs.forge.api.InboxHydrator
 import dev.sargunv.tongs.forge.api.InboxSource
 import dev.sargunv.tongs.forge.api.RepoRef
 import dev.sargunv.tongs.forge.api.ReviewSource
@@ -34,6 +35,9 @@ private class GitHubClient(http: HttpClient, account: Account, token: String) : 
     if (Capability.Inbox in account.capabilities) {
       GitHubNotifications(http, account.instance, token)
     } else null
+
+  override val inboxHydrator: InboxHydrator? =
+    if (inbox != null) GitHubHydrator(http, account.instance, token, account.login) else null
 
   override val reviews: ReviewSource =
     object : ReviewSource {

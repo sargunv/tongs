@@ -26,22 +26,28 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   Android targets share the JNI code in `jvmAndAndroidMain`, and the Android
   target packages `libtongs_jni` for arm64-v8a and x86_64
 - `forge/api`: the forge-neutral model: `Instance`, `Account`, `Capability`,
-  open enums (`NotificationReason`, `SubjectType`), and the ports each forge
-  adapter implements: `ForgeAdapter` (registered in a map by `ForgeKind`),
-  `AuthProvider` with the OAuth device flow, `InboxSource`, `InboxHydrator`, and
-  `ReviewSource`
-- `forge/github`: the GitHub adapter: notifications REST, token checks through
-  Apollo GraphQL (`src/commonMain/graphql`, with GitHub's public schema), the
-  device flow, and git smart HTTP and `loadPullRequestReview` for reviews
+  open enums (`NotificationReason`, `SubjectType`), typed failures
+  (`ForgeException`), what's new on a thread (`SubjectActivity`,
+  `summarizeWhatsNew`), and the ports each forge adapter implements:
+  `ForgeAdapter` (registered in a map by `ForgeKind`), `AuthProvider` with the
+  OAuth device flow, `InboxSource`, `InboxHydrator`, and `ReviewSource`
+- `forge/github`: the GitHub adapter: notifications REST (unread only; see
+  `docs/design.md`), inbox hydration (`GitHubHydrator`, which batches
+  `InboxHydration.graphql` under aliases), error mapping (`GitHubErrors.kt`:
+  rate limits, scopes, SAML SSO), token checks through Apollo GraphQL
+  (`src/commonMain/graphql`, with GitHub's public schema), the device flow, and
+  git smart HTTP and `loadPullRequestReview` for reviews
 - `core/net`: the shared Ktor client (OkHttp on both platforms) and conditional
   request, poll interval, `Link`, and rate limit helpers
 - `core/data`: Room 3 (`TongsDatabase`, schemas in `core/data/schemas`), the
-  inbox sync (`InboxSync`), optimistic triage (`InboxRepository`), accounts and
-  per-account forge clients, settings in DataStore, and `TokenStore`
-  implementations (Android Keystore; desktop OS keychain with a private-file
-  fallback)
+  inbox sync (`InboxSync`, with hydration and typed sync status), triage with
+  undo (`InboxRepository`), filters in GitHub's vocabulary (`InboxQuery`), saved
+  views (`InboxViewRepository`), accounts and per-account forge clients,
+  settings in DataStore, and `TokenStore` implementations (Android Keystore;
+  desktop OS keychain with a private-file fallback)
 - `core/ui`: the design system: `TongsTheme` (Material 3 Expressive), density
   per platform, `TongsIcons` (Material Symbols), `ListRow`, `SwipeActionsBox`,
+  `stateColors()` (open, merged, closed, and checks, harmonized with the theme),
   `TongsTopAppBar`, and `TongsNavigationSuite`
 - `core/navigation`: the sealed `Route` hierarchy, `Navigator`, and
   `RouteEntries`, the seam through which each feature adds its screens
@@ -82,8 +88,12 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   signed-in account's real data (signs in with `gh`'s token if there's no
   account)
 - `./gradlew :feature:inbox:verifyRoborazziJvm`: compare the inbox against its
-  screenshots in `feature/inbox/src/jvmTest/snapshots`; `recordRoborazziJvm`
-  updates them
+  screenshots in `feature/inbox/src/jvmTest/snapshots` (rows, views, filters,
+  grouping, snoozed, and each sync problem, from made-up data);
+  `recordRoborazziJvm` updates them
+- `TONGS_LIVE_TESTS=1 GH_TOKEN=$(gh auth token) ./gradlew :forge:github:jvmTest --tests '*LiveInbox*' -i`:
+  poll and hydrate your real inbox, read-only, and print each row and the
+  GraphQL points it cost
 - `./gradlew :desktopApp:run --args="--spike"`: open that PR in the renderer
   from `/tmp/tongs-spike-store`. Add `--bench` to print frame timings, or
   `--screenshot=out.png@<row>` to render offscreen (either implies `--spike`);

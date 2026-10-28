@@ -9,6 +9,8 @@ import dev.sargunv.tongs.forge.api.Capability
 import dev.sargunv.tongs.forge.api.ForgeAdapter
 import dev.sargunv.tongs.forge.api.ForgeClient
 import dev.sargunv.tongs.forge.api.ForgeKind
+import dev.sargunv.tongs.forge.api.Hydration
+import dev.sargunv.tongs.forge.api.InboxHydrator
 import dev.sargunv.tongs.forge.api.InboxPoll
 import dev.sargunv.tongs.forge.api.InboxSource
 import dev.sargunv.tongs.forge.api.InboxThread
@@ -17,6 +19,7 @@ import dev.sargunv.tongs.forge.api.NotificationReason
 import dev.sargunv.tongs.forge.api.RepoRef
 import dev.sargunv.tongs.forge.api.Subject
 import dev.sargunv.tongs.forge.api.SubjectType
+import dev.sargunv.tongs.forge.api.ThreadHydration
 import dev.sargunv.tongs.forge.api.VerifiedToken
 import kotlin.time.Clock
 import kotlin.time.Instant
@@ -86,7 +89,10 @@ class FakeInbox : InboxSource {
   }
 }
 
-class FakeAdapter(private val inbox: InboxSource) : ForgeAdapter {
+class FakeAdapter(
+  private val inbox: InboxSource,
+  private val hydrator: InboxHydrator? = null,
+) : ForgeAdapter {
   override val kind = ForgeKind.GitHub
   override val auth: AuthProvider =
     object : AuthProvider {
@@ -110,6 +116,7 @@ class FakeAdapter(private val inbox: InboxSource) : ForgeAdapter {
   override fun client(account: Account, token: String): ForgeClient =
     object : ForgeClient {
       override val inbox = this@FakeAdapter.inbox
+      override val inboxHydrator = this@FakeAdapter.hydrator
       override val reviews = null
 
       override fun close() {}
@@ -117,10 +124,36 @@ class FakeAdapter(private val inbox: InboxSource) : ForgeAdapter {
 }
 
 /** Signs in one fake account and returns its ID. */
-suspend fun signIn(db: TongsDatabase, inbox: InboxSource): Pair<Long, ForgeClients> {
+suspend fun signIn(
+  db: TongsDatabase,
+  inbox: InboxSource,
+  hydrator: InboxHydrator? = null,
+): Pair<Long, ForgeClients> {
   val tokens = InMemoryTokenStore()
-  val adapters = mapOf<ForgeKind, ForgeAdapter>(ForgeKind.GitHub to FakeAdapter(inbox))
+  val adapters = mapOf<ForgeKind, ForgeAdapter>(ForgeKind.GitHub to FakeAdapter(inbox, hydrator))
   val clients = ForgeClients(db, tokens, adapters)
   val account = AccountRepository(db, tokens, adapters, clients).signIn(Instance.GitHubDotCom, "t")
   return account.account.id.value to clients
+}
+
+/** Hydrates every thread with "N new" where N counts its hydrations, and records each batch. */
+class FakeHydrator : InboxHydrator {
+  val batches = mutableListOf<List<String>>()
+  var failure: Exception? = null
+
+  override suspend fun hydrate(threads: List<InboxThread>): Hydration {
+    failure?.let { throw it }
+    batches += threads.map { it.id }
+    return Hydration(
+      threads.map {
+        ThreadHydration(
+          it.id,
+          subjectState = "OPEN",
+          checks = "SUCCESS",
+          whatsNew = "new ${batches.size}",
+        )
+      },
+      cost = 1,
+    )
+  }
 }

@@ -134,4 +134,45 @@ class InboxSyncTest {
     assertEquals(false, dao.thread(account, "1")!!.pendingRead)
     assertEquals(false, repository.inbox().first().single().isUnread)
   }
+
+  @Test
+  fun asksForTheWholeInboxNowAndThen() = dbTest { db ->
+    val (account, clients) = signIn(db, inbox)
+    val sync = InboxSync(db, clients, virtualClock())
+    inbox.polls += changed(thread("1", START - 1.hours), cursor = "c1")
+    // The session's first poll is full, then polls send the cursor.
+    sync.poll(account)
+    sync.poll(account)
+    advanceTimeBy(InboxSync.FULL_POLL_INTERVAL)
+    sync.poll(account)
+    sync.poll(account)
+    // A refresh is always full.
+    sync.refresh()
+    assertEquals(listOf(null, "c1", null, "c1", null), inbox.cursors)
+  }
+
+  @Test
+  fun keepsThreadsTriagedHereOnceTheyreNoLongerUnread() = dbTest { db ->
+    val dao = db.inbox()
+    val (account, clients) = signIn(db, inbox)
+    val sync = InboxSync(db, clients, virtualClock())
+    val repository = InboxRepository(db, clients, backgroundScope, virtualClock())
+    inbox.polls +=
+      changed(
+        thread("1", START - 1.hours),
+        thread("2", START - 2.hours),
+        thread("3", START - 3.hours),
+      )
+    sync.poll(account)
+    // 1 is read here, 2 snoozed here; 3 is read on the web.
+    repository.markRead(ThreadKey(account, "1"))
+    runCurrent()
+    repository.snooze(ThreadKey(account, "2"), START + 1.hours)
+
+    // GitHub lists only unread threads, and none are unread now.
+    inbox.polls += changed()
+    sync.refresh()
+    assertEquals(setOf("1", "2"), dao.threads(account).map { it.id }.toSet())
+    assertEquals(false, dao.thread(account, "2")!!.unread)
+  }
 }

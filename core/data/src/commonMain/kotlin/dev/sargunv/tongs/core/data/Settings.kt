@@ -2,6 +2,7 @@ package dev.sargunv.tongs.core.data
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import dev.zacsweers.metro.AppScope
@@ -23,6 +24,8 @@ enum class SwipeAction {
 data class InboxSettings(
   val swipeLeft: SwipeAction = SwipeAction.Done,
   val swipeRight: SwipeAction = SwipeAction.Snooze,
+  /** Whether the unfiltered inbox groups threads by repo; saved views have their own. */
+  val groupByRepo: Boolean = false,
 )
 
 /** User preferences, in a DataStore beside the database. */
@@ -35,6 +38,7 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
       InboxSettings(
         swipeLeft = prefs[SWIPE_LEFT].toSwipeAction() ?: defaults.swipeLeft,
         swipeRight = prefs[SWIPE_RIGHT].toSwipeAction() ?: defaults.swipeRight,
+        groupByRepo = prefs[GROUP_BY_REPO] ?: defaults.groupByRepo,
       )
     }
 
@@ -46,10 +50,15 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
     store.edit { it[SWIPE_RIGHT] = action.name }
   }
 
+  suspend fun setGroupByRepo(group: Boolean) {
+    store.edit { it[GROUP_BY_REPO] = group }
+  }
+
   private fun String?.toSwipeAction() = SwipeAction.entries.find { it.name == this }
 
   private companion object {
     val SWIPE_LEFT = stringPreferencesKey("inbox.swipeLeft")
     val SWIPE_RIGHT = stringPreferencesKey("inbox.swipeRight")
+    val GROUP_BY_REPO = booleanPreferencesKey("inbox.groupByRepo")
   }
 }

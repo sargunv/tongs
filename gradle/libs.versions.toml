@@ -1,7 +1,7 @@
 [versions]
 agp = "9.4.1"
 android-compileSdk = "37"
-android-minSdk = "26"
+android-minSdk = "31"
 android-ndk = "30.0.16248370"
 androidx-activity = "1.13.0"
 compose = "1.12.2"

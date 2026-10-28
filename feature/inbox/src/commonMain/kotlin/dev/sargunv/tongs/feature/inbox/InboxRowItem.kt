@@ -104,7 +104,8 @@ private fun SupportingLine(row: InboxRow, colors: StateColors) {
           append(it)
         }
       },
-      maxLines = 1,
+      // What's new is the point of the line; give it a second line before cutting it off.
+      maxLines = 2,
       overflow = TextOverflow.Ellipsis,
       modifier = Modifier.weight(1f, fill = false),
     )

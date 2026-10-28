@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -178,17 +179,19 @@ fun ListRow(
       // layout as the pointer passes over it, like a mail client's row actions.
       if (hoverActions != null && (hovered || focused)) {
         val background = if (selected) colors.secondaryContainer else colors.surfaceContainerHigh
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          modifier =
-            Modifier.padding(end = 8.dp)
-              .background(
-                Brush.horizontalGradient(0f to background.copy(alpha = 0f), 0.15f to background),
-                MaterialTheme.shapes.medium,
-              )
-              .padding(start = 16.dp, end = 4.dp),
-          content = hoverActions,
-        )
+        // The row's full height, so the actions cover its time and dot rather than cut them.
+        Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier =
+              Modifier.fillMaxHeight()
+                .background(
+                  Brush.horizontalGradient(0f to background.copy(alpha = 0f), 0.2f to background),
+                )
+                .padding(start = 24.dp, end = 8.dp),
+            content = hoverActions,
+          )
+        }
       }
     }
   }

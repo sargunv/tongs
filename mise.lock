@@ -24,6 +24,16 @@ url = "https://github.com/jdx/jactionlint/releases/download/v2.3.0/jactionlint_2
 url_api = "https://api.github.com/repos/jdx/jactionlint/releases/assets/662210498"
 provenance = "github-attestations"
 
+[[tools."github:bbqsrc/cargo-ndk"]]
+version = "4.1.2"
+backend = "github:bbqsrc/cargo-ndk"
+specifiers = ["4.1.2"]
+
+[tools."github:bbqsrc/cargo-ndk"."platforms.linux-x64"]
+checksum = "sha256:9451622c4567e8abb2c8005001855e32901c0b716ccdd3a173a4375fd03426e1"
+url = "https://github.com/bbqsrc/cargo-ndk/releases/download/v4.1.2/cargo-ndk-x86_64-unknown-linux-gnu-v4.1.2.tgz"
+url_api = "https://api.github.com/repos/bbqsrc/cargo-ndk/releases/assets/280972291"
+
 [[tools."github:jdx/hk"]]
 version = "2.9.0"
 backend = "github:jdx/hk"
@@ -52,3 +62,4 @@ specifiers = ["1.99.1"]
 [tools.rust.options]
 components = "clippy,rustfmt"
 profile = "minimal"
+targets = "aarch64-linux-android,x86_64-linux-android"

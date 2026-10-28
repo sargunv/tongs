@@ -42,7 +42,9 @@ class Review private constructor(private var handle: Long, private val highlight
       val spanCount = buffer.getShort(pos + 2).toInt() and 0xFFFF
       val textLength = buffer.getInt(pos + 16)
       val text = ByteArray(textLength)
-      buffer.get(pos + RECORD_HEADER, text)
+      // Relative get: the absolute bulk `get(index, dst)` needs Android API 35.
+      buffer.position(pos + RECORD_HEADER)
+      buffer.get(text)
       val spansAt = pos + RECORD_HEADER + textLength
       out +=
         Row(

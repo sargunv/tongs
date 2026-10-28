@@ -20,5 +20,22 @@ internal object NativeEngine {
 
   @JvmStatic external fun filePath(handle: Long, file: Int): String
 
-  @JvmStatic external fun fillRows(handle: Long, first: Int, count: Int, out: ByteBuffer): Int
+  @JvmStatic
+  external fun fillRows(
+    handle: Long,
+    highlighter: Long,
+    first: Int,
+    count: Int,
+    out: ByteBuffer,
+  ): Int
+
+  @JvmStatic external fun newHighlighter(cacheBytes: Long, threads: Int): Long
+
+  @JvmStatic external fun shutdownHighlighter(handle: Long)
+
+  @JvmStatic external fun closeHighlighter(handle: Long)
+
+  @JvmStatic external fun awaitHighlights(handle: Long, after: Long, timeoutMillis: Int): Long
+
+  @JvmStatic external fun highlighterCacheBytes(handle: Long): Long
 }

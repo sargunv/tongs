@@ -12,7 +12,9 @@ val cargoBuild by
     description = "Builds libtongs_jni with cargo."
     workingDir = rootDir
     commandLine("cargo", "build", "--release", "-p", "tongs-jni")
-    inputs.files(fileTree(rootDir.resolve("engine-rs")) { include("**/*.rs", "**/Cargo.toml") })
+    inputs.files(
+      fileTree(rootDir.resolve("engine-rs")) { include("**/*.rs", "**/*.scm", "**/Cargo.toml") },
+    )
     inputs.files(rootDir.resolve("Cargo.lock"))
     outputs.dir(rootDir.resolve("target/release"))
   }

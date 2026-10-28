@@ -1,19 +1,26 @@
 //! JNI bindings for `dev.sargunv.tongs.engine.NativeEngine`.
 //!
-//! Reviews cross the boundary as opaque handles. The hot path, `fillRows`,
-//! writes packed row records into a direct `ByteBuffer` the caller reuses
-//! every frame, so scrolling allocates nothing on the JVM side but strings.
+//! Reviews and the highlighter cross the boundary as opaque handles. The hot
+//! path, `fillRows`, writes packed row records into a direct `ByteBuffer` the
+//! caller reuses every frame, so scrolling allocates nothing on the JVM side
+//! but strings and span arrays.
 
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteBuffer, JClass, JString};
 use jni::sys::{jint, jlong};
-use tongs_engine::review::Review;
+use tongs_engine::review::{Review, TAB};
 use tongs_engine::store::Store;
+use tongs_highlight::file::project;
+use tongs_highlight::languages::Lang;
+use tongs_highlight::service::{Highlights, Lookup};
 
-/// Fixed part of a row record: kind u8, 3 padding bytes, then file, old line,
-/// new line, and text length as little-endian u32s. UTF-8 text follows.
+/// Fixed part of a row record: kind u8, flags u8, span count u16, then file,
+/// old line, new line, and text length as u32s, all little-endian. UTF-8 text
+/// follows, then one u32 per span: `utf16Column << 8 | styleId`.
 const RECORD_HEADER: usize = 20;
+/// Record flag: highlights for this row are still being computed.
+const FLAG_HIGHLIGHT_PENDING: u8 = 1;
 
 /// Engine errors, surfaced to Kotlin as `RuntimeException`s.
 #[derive(Debug)]
@@ -42,6 +49,71 @@ impl From<anyhow::Error> for Error {
 fn review<'a>(handle: jlong) -> &'a Review {
     // Safety: handles come from `openReview` and stay valid until `closeReview`.
     unsafe { &*(handle as *const Review) }
+}
+
+fn highlights<'a>(handle: jlong) -> Option<&'a Highlights> {
+    // Safety: handles come from `newHighlighter` and stay valid until
+    // `closeHighlighter`; 0 means no highlighting.
+    (handle != 0).then(|| unsafe { &*(handle as *const Highlights) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_newHighlighter<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    cache_bytes: jlong,
+    threads: jint,
+) -> jlong {
+    let highlights = Highlights::new(cache_bytes as usize, threads as usize);
+    Box::into_raw(Box::new(highlights)) as jlong
+}
+
+/// Stops the workers and wakes `awaitHighlights` callers, so the handle can
+/// be closed once they return.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_shutdownHighlighter<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) {
+    if let Some(highlights) = highlights(handle) {
+        highlights.shutdown();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_closeHighlighter<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) {
+    if handle != 0 {
+        // Safety: see `highlights`; the Kotlin side forgets the handle after this.
+        drop(unsafe { Box::from_raw(handle as *mut Highlights) });
+    }
+}
+
+/// Blocks until highlights land after epoch `after`, or the timeout passes.
+/// Returns the current epoch.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_awaitHighlights<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    after: jlong,
+    timeout_millis: jint,
+) -> jlong {
+    let timeout = std::time::Duration::from_millis(timeout_millis as u64);
+    highlights(handle).map_or(0, |h| h.wait_for_change(after as u64, timeout) as jlong)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_highlighterCacheBytes<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> jlong {
+    highlights(handle).map_or(0, |h| h.cache_bytes() as jlong)
 }
 
 #[unsafe(no_mangle)]
@@ -121,12 +193,15 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_filePath<'loca
 }
 
 /// Writes records for rows `first..first + count` into `out`, stopping early
-/// if it fills. Returns the number of rows written.
+/// if it fills. Returns the number of rows written. With a highlighter, rows
+/// carry the spans that are ready and queue the rest, nearest the middle of
+/// the range first.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_fillRows<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
+    highlighter: jlong,
     first: jint,
     count: jint,
     out: JByteBuffer<'local>,
@@ -138,6 +213,7 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_fillRows<'loca
         let out = unsafe { std::slice::from_raw_parts_mut(ptr, capacity) };
         Ok(fill_rows(
             review(handle),
+            highlights(highlighter),
             first as usize,
             count as usize,
             out,
@@ -146,26 +222,86 @@ pub extern "system" fn Java_dev_sargunv_tongs_engine_NativeEngine_fillRows<'loca
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
-fn fill_rows(review: &Review, first: usize, count: usize, out: &mut [u8]) -> jint {
+fn fill_rows(
+    review: &Review,
+    highlights: Option<&Highlights>,
+    first: usize,
+    count: usize,
+    out: &mut [u8],
+) -> jint {
     let end = (first + count).min(review.rows.len());
+    let middle = (first + end) / 2;
+    let mut request = highlights.map(Highlights::request);
+    // Lookups for the file sides seen so far; rows of one file alternate
+    // between its two sides.
+    let mut lookups = Vec::new();
     let (mut pos, mut written) = (0, 0);
-    let mut text = Vec::new();
-    for row in review.rows.get(first..end).unwrap_or_default() {
+    let (mut text, mut spans) = (Vec::new(), Vec::new());
+    for (i, row) in review
+        .rows
+        .get(first..end)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
         text.clear();
+        spans.clear();
         review.row_text(row, &mut text);
-        let len = RECORD_HEADER + text.len();
+        let mut flags = 0;
+        if let (Some(request), Some(source)) = (&mut request, review.row_source(row)) {
+            let lookup = match lookups.iter().find(|(blob, _)| *blob == source.blob) {
+                Some((_, lookup)) => lookup,
+                None => {
+                    let path = &review.files[row.file as usize].path;
+                    let lookup = match Lang::for_path(path) {
+                        Some(lang) => request.get(
+                            source.blob,
+                            lang,
+                            source.text.bytes().len(),
+                            (first + i).abs_diff(middle) as u32,
+                            || source.text.clone(),
+                        ),
+                        None => Lookup::Plain,
+                    };
+                    lookups.push((source.blob, lookup));
+                    &lookups.last().unwrap().1
+                }
+            };
+            match lookup {
+                Lookup::Ready(file) => {
+                    project(
+                        source.text.line(source.line),
+                        file.line(source.line),
+                        TAB.len() as u32,
+                        &mut spans,
+                    );
+                    // Drop spans past the truncated text; UTF-16 is never
+                    // longer than UTF-8.
+                    spans.retain(|span| (span >> 8) < text.len() as u32);
+                }
+                Lookup::Pending => flags |= FLAG_HIGHLIGHT_PENDING,
+                Lookup::Plain => {}
+            }
+        }
+        let len = RECORD_HEADER + text.len() + spans.len() * 4;
         if pos + len > out.len() {
             break;
         }
         let record = &mut out[pos..pos + len];
-        record[..4].copy_from_slice(&[row.kind as u8, 0, 0, 0]);
+        record[0] = row.kind as u8;
+        record[1] = flags;
+        record[2..4].copy_from_slice(&(spans.len() as u16).to_le_bytes());
         for (i, value) in [row.file, row.old_line, row.new_line, text.len() as u32]
             .into_iter()
             .enumerate()
         {
             record[4 + i * 4..8 + i * 4].copy_from_slice(&value.to_le_bytes());
         }
-        record[RECORD_HEADER..].copy_from_slice(&text);
+        let spans_at = RECORD_HEADER + text.len();
+        record[RECORD_HEADER..spans_at].copy_from_slice(&text);
+        for (i, span) in spans.iter().enumerate() {
+            record[spans_at + i * 4..spans_at + i * 4 + 4].copy_from_slice(&span.to_le_bytes());
+        }
         pos += len;
         written += 1;
     }

@@ -11,6 +11,7 @@ import androidx.compose.ui.window.rememberWindowState
 import dev.sargunv.tongs.codeview.CodeView
 import dev.sargunv.tongs.codeview.CodeViewState
 import dev.sargunv.tongs.codeview.rememberCodeViewState
+import dev.sargunv.tongs.engine.Highlighter
 import dev.sargunv.tongs.engine.Review
 import java.io.File
 import kotlin.time.TimeSource
@@ -20,11 +21,12 @@ import org.jetbrains.skia.EncodedImageFormat
 /**
  * Spike: opens a review from a pre-filled object store (see `tongs-spike`) and renders it.
  *
- * Usage: `[storeDir oldCommit newCommit] [--bench] [--screenshot=out.png@row]`. Defaults to
- * maplibre/maplibre-native-ffi#760.
+ * Usage: `[storeDir oldCommit newCommit] [--bench] [--screenshot=out.png@row] [--no-highlight]`.
+ * Defaults to maplibre/maplibre-native-ffi#760.
  */
 fun main(args: Array<String>) {
   val bench = "--bench" in args
+  val highlighter = if ("--no-highlight" in args) null else Highlighter()
   val screenshot = args.firstNotNullOfOrNull {
     it.removePrefix("--screenshot=").takeIf { s -> s != it }
   }
@@ -38,7 +40,7 @@ fun main(args: Array<String>) {
       )
 
   val opened = TimeSource.Monotonic.markNow()
-  val review = Review.open(storeDir, oldCommit, newCommit)
+  val review = Review.open(storeDir, oldCommit, newCommit, highlighter)
   println(
     "Opened review: ${review.fileCount} files, ${review.rowCount} rows in ${opened.elapsedNow()}",
   )
@@ -47,6 +49,7 @@ fun main(args: Array<String>) {
     val (path, row) = screenshot.split("@")
     renderOffscreen(review, path, row.toInt())
     review.close()
+    highlighter?.close()
     return
   }
 
@@ -62,12 +65,21 @@ fun main(args: Array<String>) {
       if (bench) {
         LaunchedEffect(state) {
           delay(1500)
-          benchmark("fling: 200 px/frame for 3000 frames", state, frames = 3000) {
-            state.scrollBy(200.0)
+          // With highlighting, the first pass of each runs cold (highlights land mid-scroll) and
+          // the second warm (from the cache).
+          for (pass in if (highlighter != null) listOf("cold", "warm") else listOf("plain")) {
+            state.scrollToRow(0)
+            benchmark("fling ($pass): 200 px/frame for 3000 frames", state, frames = 3000) {
+              state.scrollBy(200.0)
+            }
+            highlighter?.let { println("  highlight cache  ${it.cacheBytes / 1024} KiB") }
           }
-          state.scrollToRow(0)
-          benchmark("scrub: whole review in 600 frames", state, frames = 600) {
-            state.scrollBy(state.maxOffsetY / 600)
+          for (pass in if (highlighter != null) listOf("cold", "warm") else listOf("plain")) {
+            state.scrollToRow(0)
+            benchmark("scrub ($pass): whole review in 600 frames", state, frames = 600) {
+              state.scrollBy(state.maxOffsetY / 600)
+            }
+            highlighter?.let { println("  highlight cache  ${it.cacheBytes / 1024} KiB") }
           }
           val runtime = Runtime.getRuntime()
           System.gc()
@@ -80,6 +92,7 @@ fun main(args: Array<String>) {
     }
   }
   review.close()
+  highlighter?.close()
 }
 
 private suspend fun benchmark(name: String, state: CodeViewState, frames: Int, step: () -> Unit) {
@@ -102,15 +115,32 @@ private suspend fun benchmark(name: String, state: CodeViewState, frames: Int, s
   println("  frame interval  ${summary(intervals)}")
   println("  draw CPU        ${summary(state.stats.drawNanos)}")
   if (fetches.isNotEmpty()) println("  row fetch (${fetches.size}x)  ${summary(fetches)}")
+  val stats = state.stats
+  if (stats.rowsPending > 0) {
+    println(
+      "  rows drawn plain while highlighting  %.1f%%"
+        .format(100.0 * stats.rowsPending / stats.rowsDrawn),
+    )
+  }
 }
 
-/** Renders the view scrolled to [row] into a PNG, without opening a window. */
+/**
+ * Renders the view scrolled to [row] into a PNG, without opening a window. Waits up to 5 seconds
+ * for the visible rows' highlights.
+ */
 private fun renderOffscreen(review: Review, path: String, row: Int) {
   val state = CodeViewState(review)
   val scene = ImageComposeScene(1400, 900, density = Density(1.5f)) { CodeView(state) }
   scene.render()
   state.scrollToRow(row)
-  val image = scene.render(1_000_000_000)
+  scene.render(1_000_000_000)
+  val waited = TimeSource.Monotonic.markNow()
+  while (
+    review.rows(row, 60).any { it.highlightPending } && waited.elapsedNow().inWholeSeconds < 5
+  ) {
+    Thread.sleep(10)
+  }
+  val image = scene.render(2_000_000_000)
   File(path).writeBytes(checkNotNull(image.encodeToData(EncodedImageFormat.PNG)).bytes)
   scene.close()
   println("Wrote $path")

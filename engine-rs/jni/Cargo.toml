@@ -12,3 +12,4 @@ crate-type = ["cdylib"]
 anyhow = "1.0.104"
 jni = "0.22.4"
 tongs-engine = { version = "0.1.0", path = "../engine" }
+tongs-highlight = { version = "0.1.0", path = "../highlight" }

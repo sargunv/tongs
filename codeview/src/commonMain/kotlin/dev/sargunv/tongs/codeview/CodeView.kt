@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import dev.sargunv.tongs.engine.ReviewRows
 import dev.sargunv.tongs.engine.Row
 import dev.sargunv.tongs.engine.RowKind
+import dev.sargunv.tongs.engine.TokenStyle
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.time.TimeSource
@@ -60,6 +62,8 @@ class CodeViewState(val rows: ReviewRows) {
 
   internal var lineHeight by mutableFloatStateOf(1f)
   internal var viewportHeight by mutableIntStateOf(0)
+  /** Bumped from a background thread when highlights land; drawing reads it to repaint. */
+  internal var highlightGeneration by mutableIntStateOf(0)
   internal val window = RowWindow(rows)
   val stats = FrameStats()
 
@@ -97,10 +101,15 @@ class CodeViewState(val rows: ReviewRows) {
 class FrameStats {
   val drawNanos = ArrayList<Long>()
   val fetchNanos = ArrayList<Long>()
+  /** Rows drawn, and how many of those were still plain while waiting on highlights. */
+  var rowsDrawn = 0L
+  var rowsPending = 0L
 
   fun clear() {
     drawNanos.clear()
     fetchNanos.clear()
+    rowsDrawn = 0
+    rowsPending = 0
   }
 }
 
@@ -110,6 +119,9 @@ internal class RowWindow(private val source: ReviewRows) {
   private var cached: List<Row> = emptyList()
   var lastFetchNanos = 0L
     private set
+
+  /** The [CodeViewState.highlightGeneration] these rows reflect. */
+  var highlightGeneration = 0
 
   fun rows(first: Int, count: Int): List<Row> {
     lastFetchNanos = 0
@@ -122,6 +134,11 @@ internal class RowWindow(private val source: ReviewRows) {
     }
     val from = (first - start).coerceIn(0, cached.size)
     return cached.subList(from, (end - start).coerceIn(from, cached.size))
+  }
+
+  /** Drops the cached rows if any were waiting on highlights, so the next call refetches. */
+  fun invalidatePending() {
+    if (cached.any { it.highlightPending }) cached = emptyList()
   }
 }
 
@@ -138,7 +155,57 @@ class CodeViewColors(
   val header: Color = Color(0xFF232731),
   val headerText: Color = Color(0xFFE8EAEE),
   val scrollThumb: Color = Color(0x66A0A8B8),
-)
+  val comment: Color = Color(0xFF7F848E),
+  val keyword: Color = Color(0xFFC678DD),
+  val operator: Color = Color(0xFF56B6C2),
+  val punctuation: Color = Color(0xFFA0A8B7),
+  val string: Color = Color(0xFF98C379),
+  val stringSpecial: Color = Color(0xFF56B6C2),
+  val number: Color = Color(0xFFD19A66),
+  val constant: Color = Color(0xFFD19A66),
+  val function: Color = Color(0xFF61AFEF),
+  val type: Color = Color(0xFFE5C07B),
+  val property: Color = Color(0xFFE06C75),
+  val variableBuiltin: Color = Color(0xFFE06C75),
+  val attribute: Color = Color(0xFFD19A66),
+  val namespace: Color = Color(0xFFE5C07B),
+  val label: Color = Color(0xFFE06C75),
+  val tag: Color = Color(0xFFE06C75),
+  val heading: Color = Color(0xFFE06C75),
+  val link: Color = Color(0xFF61AFEF),
+  val emphasis: Color = Color(0xFFD19A66),
+) {
+  private val styles =
+    TokenStyle.entries
+      .map {
+        when (it) {
+          TokenStyle.Plain -> text
+          TokenStyle.Comment -> comment
+          TokenStyle.Keyword -> keyword
+          TokenStyle.Operator -> operator
+          TokenStyle.Punctuation -> punctuation
+          TokenStyle.String -> string
+          TokenStyle.StringSpecial -> stringSpecial
+          TokenStyle.Number -> number
+          TokenStyle.Constant -> constant
+          TokenStyle.Function -> function
+          TokenStyle.Type -> type
+          TokenStyle.Property -> property
+          TokenStyle.VariableBuiltin -> variableBuiltin
+          TokenStyle.Attribute -> attribute
+          TokenStyle.Namespace -> namespace
+          TokenStyle.Label -> label
+          TokenStyle.Tag -> tag
+          TokenStyle.Heading -> heading
+          TokenStyle.Link -> link
+          TokenStyle.Emphasis -> emphasis
+        }
+      }
+      .toTypedArray()
+
+  /** The color for a style ID from [Row.spans]; unknown IDs draw as plain text. */
+  fun style(id: Int): Color = styles.getOrElse(id) { text }
+}
 
 private const val GUTTER_DIGITS = 6
 private val ScrollbarWidth = 12.dp
@@ -162,6 +229,10 @@ fun CodeView(
   val focus = remember { FocusRequester() }
   val textLeft = painter.advance * (GUTTER_DIGITS * 2 + 3)
   val maxLineWidth = painter.advance * 4096
+  DisposableEffect(state.rows) {
+    val subscription = state.rows.onHighlightsChanged { state.highlightGeneration++ }
+    onDispose { subscription.close() }
+  }
 
   Box(
     modifier
@@ -214,6 +285,10 @@ private fun DrawScope.drawRows(
   textLeft: Float,
 ) {
   val mark = TimeSource.Monotonic.markNow()
+  if (state.highlightGeneration != state.window.highlightGeneration) {
+    state.window.highlightGeneration = state.highlightGeneration
+    state.window.invalidatePending()
+  }
   val lineHeight = painter.lineHeight
   val first = state.firstVisibleRow
   val top = -(state.offsetY - first * lineHeight.toDouble()).toFloat()
@@ -241,6 +316,8 @@ private fun DrawScope.drawRows(
 
   state.stats.drawNanos += mark.elapsedNow().inWholeNanoseconds
   state.stats.fetchNanos += state.window.lastFetchNanos
+  state.stats.rowsDrawn += rows.size
+  state.stats.rowsPending += rows.count { it.highlightPending }
 }
 
 private fun DrawScope.drawRow(
@@ -295,12 +372,40 @@ private fun DrawScope.drawRow(
     val text = row.text
     if (firstColumn < text.length) {
       val end = (firstColumn + columns).coerceAtMost(text.length)
-      val x = textLeft + firstColumn * painter.advance - scrollX
+      val left = textLeft - scrollX
       clipRect(left = textLeft, right = size.width) {
-        drawText(text.substring(firstColumn, end), x, y, colors.text)
+        // One draw per style run, each at its own column.
+        var runStart = firstColumn
+        var style = 0
+        for (span in row.spans) {
+          val column = Row.spanColumn(span)
+          if (column > runStart) {
+            drawRun(painter, text, runStart, column.coerceAtMost(end), left, y, colors.style(style))
+            runStart = column
+          }
+          if (runStart >= end) break
+          style = Row.spanStyle(span)
+        }
+        drawRun(painter, text, runStart, end, left, y, colors.style(style))
       }
     }
   }
+
+/** Draws `text[start until end]` at its column, skipping runs of spaces. */
+private fun DrawScope.drawRun(
+  painter: TextPainter,
+  text: String,
+  start: Int,
+  end: Int,
+  left: Float,
+  y: Float,
+  color: Color,
+) {
+  var from = start
+  while (from < end && text[from] == ' ') from++
+  if (from >= end) return
+  with(painter) { drawText(text.substring(from, end), left + from * painter.advance, y, color) }
+}
 
 /** Draws [number] right-aligned to [right]. */
 private fun DrawScope.drawLineNumber(

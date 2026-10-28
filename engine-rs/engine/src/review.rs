@@ -15,7 +15,7 @@ use crate::store::Store;
 use crate::tree_walk::{Change, TreeWalk};
 
 const CONTEXT: u32 = 3;
-const TAB: &str = "    ";
+pub const TAB: &str = "    ";
 /// Longer lines are cut off; the renderer never needs to shape more.
 const MAX_LINE_BYTES: usize = 4096;
 
@@ -44,8 +44,18 @@ pub struct FileEntry {
     pub first_row: u32,
     pub additions: u32,
     pub deletions: u32,
-    old: Arc<Text>,
-    new: Arc<Text>,
+    pub old_blob: Option<ObjectId>,
+    pub new_blob: Option<ObjectId>,
+    pub old: Arc<Text>,
+    pub new: Arc<Text>,
+}
+
+/// The source line behind a code row.
+pub struct RowSource<'a> {
+    pub blob: ObjectId,
+    pub text: &'a Arc<Text>,
+    /// 0-based.
+    pub line: u32,
 }
 
 pub struct Review {
@@ -116,6 +126,8 @@ impl Review {
             first_row,
             additions,
             deletions,
+            old_blob: change.old,
+            new_blob: change.new,
             old: Arc::new(old),
             new: Arc::new(new),
         });
@@ -186,6 +198,22 @@ impl Review {
         *new_pos += 1;
     }
 
+    /// The blob and line a code row shows: the old side for removed lines,
+    /// the new side otherwise.
+    pub fn row_source(&self, row: &Row) -> Option<RowSource<'_>> {
+        let file = &self.files[row.file as usize];
+        let (blob, text, line) = match row.kind {
+            RowKind::Removed => (file.old_blob?, &file.old, row.old_line),
+            RowKind::Added | RowKind::Context => (file.new_blob?, &file.new, row.new_line),
+            _ => return None,
+        };
+        Some(RowSource {
+            blob,
+            text,
+            line: line - 1,
+        })
+    }
+
     /// Display text for a row: tabs expanded, line ending stripped, capped.
     pub fn row_text(&self, row: &Row, out: &mut Vec<u8>) {
         let file = &self.files[row.file as usize];
@@ -225,7 +253,7 @@ impl Review {
     }
 }
 
-struct Text {
+pub struct Text {
     bytes: Vec<u8>,
     /// Byte offset of each line start, plus a final entry at `bytes.len()`.
     starts: Vec<u32>,
@@ -249,7 +277,15 @@ impl Text {
         }
     }
 
-    fn line_count(&self) -> u32 {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn is_binary(&self) -> bool {
+        self.binary
+    }
+
+    pub fn line_count(&self) -> u32 {
         self.starts.len() as u32 - 1
     }
 
@@ -258,11 +294,18 @@ impl Text {
         imara_diff::sources::byte_lines(&self.bytes)
     }
 
-    fn line(&self, index: u32) -> &[u8] {
+    /// A line without its terminator.
+    pub fn line(&self, index: u32) -> &[u8] {
         let (start, end) = (self.starts[index as usize], self.starts[index as usize + 1]);
         let line = &self.bytes[start as usize..end as usize];
         let line = line.strip_suffix(b"\n").unwrap_or(line);
         line.strip_suffix(b"\r").unwrap_or(line)
+    }
+}
+
+impl AsRef<[u8]> for Text {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
     }
 }
 

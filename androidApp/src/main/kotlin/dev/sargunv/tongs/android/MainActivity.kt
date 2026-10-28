@@ -27,6 +27,7 @@ import dev.sargunv.tongs.codeview.CodeView
 import dev.sargunv.tongs.codeview.CodeViewColors
 import dev.sargunv.tongs.codeview.androidTextPath
 import dev.sargunv.tongs.codeview.rememberCodeViewState
+import dev.sargunv.tongs.engine.Highlighter
 import dev.sargunv.tongs.engine.Review
 import java.io.File
 import kotlin.time.TimeSource
@@ -34,6 +35,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 internal const val TAG = "Tongs"
+
+private val highlighter by lazy { Highlighter() }
 
 /**
  * Spike: opens a review from an object store pushed with adb (see AGENTS.md) and renders it.
@@ -66,7 +69,7 @@ class MainActivity : ComponentActivity() {
         val opened = TimeSource.Monotonic.markNow()
         review =
           withContext(Dispatchers.IO) {
-            runCatching { Review.open(storeDir, oldCommit, newCommit) }
+            runCatching { Review.open(storeDir, oldCommit, newCommit, highlighter) }
           }
         review
           ?.onSuccess {

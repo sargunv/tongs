@@ -1,0 +1,15 @@
+[package]
+name = "tongs-grammars"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+lzma-rust2 = { version = "0.24.0", default-features = false, features = [
+  "std",
+  "encoder",
+] }
+serde_json = "1.0.154"

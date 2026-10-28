@@ -20,5 +20,20 @@ run = "hk check --all"
 [tasks.fix]
 run = "hk fix --all"
 
+[tasks.desktop]
+description = "Run the desktop app"
+run = "./gradlew :desktopApp:run"
+
+[tasks.android]
+description = "Install the release build on a connected Android device and open it; set ANDROID_SERIAL to pick a device"
+run = [
+  "./gradlew :androidApp:installRelease",
+  "\"$ANDROID_HOME/platform-tools/adb\" shell am start -n dev.sargunv.tongs/.android.MainActivity",
+]
+
+[tasks.test]
+description = "Run the engine and app tests"
+run = ["cargo test", "./gradlew check"]
+
 [hooks]
 postinstall = ["hk install --mise"]

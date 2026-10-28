@@ -101,6 +101,10 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   targets, cargo-ndk, hk, dprint). Android builds also need the Android SDK at
   `~/Android/Sdk` with the NDK version in `gradle/libs.versions.toml`
 - `mise run check` / `mise run fix`: run every linter and formatter through hk
+- `mise run desktop`: run the desktop app
+- `mise run android`: install the release build (signed with the debug key) on a
+  connected device and open it; set `ANDROID_SERIAL` when several are attached
+- `mise run test`: `cargo test` and `./gradlew check`
 - `cargo test`: engine unit tests
 - `cargo run --release -p tongs-spike -- maplibre/maplibre-native-ffi 760`:
   fetch and diff a 576k-line PR (needs `gh auth login` or `GH_TOKEN`); fills

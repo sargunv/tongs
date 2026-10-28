@@ -211,7 +211,9 @@ too, through an ANSI-to-token-run adapter, since logs are also huge.
   implementation:
   - Desktop: Skiko `TextLine` and `drawTextLine`, one shaped run per token run,
     with x = column × advance.
-  - Android: `Canvas.drawText` with cached `Paint` objects.
+  - Android: glyph IDs cached per character and placed on the column grid with
+    `Canvas.drawGlyphs` (API 31+). Lines with characters off the grid, and older
+    devices, use `Canvas.drawText`.
 
   The row model, layout, scrolling, selection, find, and theming are shared
   code.
@@ -458,6 +460,21 @@ All versions verified against releases on 2026-10-28.
 | Formatting and lint  | ktfmt through dprint, detekt 2                                                                                                                 |
 | Desktop packaging    | Compose native distributions; Conveyor if we want auto-update                                                                                  |
 
+**Android floor.** minSdk 26 (Android 8.0), compileSdk and targetSdk 37, NDK r30
+(30.0.16248370), with the engine built by cargo-ndk.
+
+- Compose needs 23. The renderer's fast path needs 31, but it keeps a `drawText`
+  path anyway for font fallback, so a lower floor costs one branch. On an API 26
+  emulator the review renders correctly through that path.
+- 26 rather than 23 drops compat code we'd otherwise write: notification
+  channels for inbox notifications, `java.time`, and adaptive icons.
+- compileSdk is 37 because CMP 1.12.2's androidx dependencies require it.
+- AGP 9 conventions: KMP libraries use
+  `com.android.kotlin.multiplatform.library` with a `kotlin { android {} }`
+  block, and `androidApp` uses `com.android.application` with AGP's built-in
+  Kotlin, so there's no `org.jetbrains.kotlin.android` plugin. AGP 9.5.0 came
+  out on 2026-10-28, after this table was checked.
+
 **Module layout.** This follows JetBrains' 2026 structure, split further by
 feature:
 
@@ -545,6 +562,78 @@ Not covered yet:
 - wide (CJK) characters on the column grid
 - selection
 - Android
+
+### 2026-10-28: canvas renderer, Android
+
+The `androidApp` spike opens the same PR from a store pushed with adb and draws
+it with the same `codeview`. Method:
+
+- x86_64 API 36 emulator, 4 cores, `-gpu host` (Radeon 8060S through the
+  emulator's GLES translator), 60 Hz, 1080×2400 at 420 dpi. That's about 40 rows
+  of 38 columns of code.
+- Release build with R8, AOT-compiled with `cmd package compile -m speed`, since
+  there's no baseline profile yet.
+- Two other agents were building on the same host (load average 8–22 on 32
+  threads). These are emulator numbers, so they show relative costs, not what a
+  phone does.
+- Ranges are p50s across 3–5 runs.
+
+Results:
+
+- **Opening the review:** 99–157 ms, against 70 ms on desktop. After the passes
+  the JVM heap holds 3 MiB and the native heap 69 MiB.
+- **Text drawing.** This records 50 lines of 40 columns into a `RenderNode`, 600
+  times:
+
+  | Path                        | New lines every frame | Same lines every frame |
+  | --------------------------- | --------------------- | ---------------------- |
+  | `Canvas.drawText` (Minikin) | 0.19–0.27 ms          | 0.10–0.18 ms           |
+  | Glyph grid (`drawGlyphs`)   | 0.03–0.04 ms          | 0.02–0.03 ms           |
+
+  At row 300,000, both paths produce pixel-identical screenshots.
+
+- **Fling and scrub.** These are the desktop passes, with draw CPU per frame:
+
+  | Pass                       | Glyph grid p50 | Glyph grid p99 | `drawText` p50 | `drawText` p99 |
+  | -------------------------- | -------------- | -------------- | -------------- | -------------- |
+  | Fling, 200 px/frame ×3,000 | 0.20–0.33 ms   | 0.59–2.93 ms   | 0.42–0.70 ms   | 0.97–4.67 ms   |
+  | Scrub, whole review in 600 | 0.18–0.27 ms   | 0.46–0.83 ms   | 0.65–0.86 ms   | 1.14–2.49 ms   |
+
+  Row fetches over JNI take 0.04–0.09 ms at p50.
+
+- **Frames.** The Choreographer interval is 16.67 ms at p50 in every run, but
+  missed vsyncs range from 0 to about 1,100 per 3,600 frames, with no consistent
+  difference between the two paths.
+  - Misses track the RenderThread's `eglSwapBuffers` and GPU stages, whose p99
+    reaches 40–70 ms in runs that miss.
+  - UI thread work stays at 0.6–1.7 ms p99 in most runs, and 6.7 ms at worst.
+
+  This looks like the emulator's host GPU pipe under contention, not the
+  renderer. Judging jank needs a device.
+
+Findings:
+
+- **Android doesn't hit desktop's cliff.** Minikin caches layouts per word, so
+  `drawText` costs about 4–5 µs per line, not the 2–3 ms of Skia's `TextLine`.
+  Both paths fit the frame budget.
+- **The glyph grid is still the default on API 31+.** It cuts text recording
+  5–8× for new lines and 3–6× for cached ones, and total draw CPU 2–4×, which
+  leaves headroom for highlighting. It needs `TextRunShaper` (API 31) to get the
+  monospace `Font` and glyph IDs. A UTF-16 unit goes on the grid only if shaping
+  it alone gives one glyph from that font, one column wide. Any other character
+  sends the whole line to `drawText`.
+- **`libtongs_jni`** is 1.16 MiB on arm64-v8a and 1.27 MiB on x86_64 after AGP
+  strips it (546 and 582 KiB gzipped). Before stripping it's 16.6 and 15.8 MiB,
+  because the release profile keeps line tables.
+  - The whole release APK, with both ABIs, is 3.2 MiB.
+  - NDK r30 aligns the load segments to 16 KB, and `zipalign -P 16` passes.
+
+Not covered yet:
+
+- a physical device, and a baseline profile
+- tabs and wide characters (the same gap as desktop)
+- touch input beyond a hand check: a swipe flings vertically and scrolls
+  horizontally
 
 ## Plan
 

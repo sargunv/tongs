@@ -1,19 +1,13 @@
 package dev.sargunv.tongs.feature.thread
 
-import androidx.compose.ui.input.key.Key
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.ExperimentalTestApi
-import androidx.compose.ui.test.SemanticsMatcher
-import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsEnabled
-import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.onRoot
-import androidx.compose.ui.test.performKeyInput
-import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.v2.runDesktopComposeUiTest
 import androidx.lifecycle.ViewModelStore
 import androidx.room3.Room
@@ -44,6 +38,7 @@ import dev.sargunv.tongs.forge.api.ThreadLoad
 import dev.sargunv.tongs.forge.api.ThreadSource
 import dev.sargunv.tongs.forge.api.TimelineItem
 import dev.sargunv.tongs.forge.api.TimelinePage
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -59,7 +54,14 @@ import kotlinx.coroutines.runBlocking
 @OptIn(ExperimentalTestApi::class)
 class ReplyScreenTest {
   @Test
-  fun savingMakesComposerReadOnlyAndQueuesOnlyOneReply() =
+  fun commentCapturesBodyIgnoresDuplicatesAndSurvivesDismissalDuringSave() =
+    submitWhileWriterBusy("Comment")
+
+  @Test
+  fun closeCapturesBodyIgnoresDuplicatesAndSurvivesDismissalDuringSave() =
+    submitWhileWriterBusy("Close with comment")
+
+  private fun submitWhileWriterBusy(action: String) =
     runDesktopComposeUiTest(width = 700, height = 640) {
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
       val db =
@@ -68,6 +70,7 @@ class ReplyScreenTest {
           .build()
       val models = ViewModelStore()
       val releaseWrite = CompletableDeferred<Unit>()
+      var visible by mutableStateOf(true)
       var closes = 0
       try {
         val tokens = InMemoryTokenStore()
@@ -122,13 +125,22 @@ class ReplyScreenTest {
             threads,
             drafts,
             accounts,
+            scope,
           )
         models.put("reply", model)
-        setContent { TongsTheme { ReplyScreen(model) { closes++ } } }
+        setContent {
+          TongsTheme {
+            if (visible)
+              ReplyScreen(model) {
+                closes++
+                visible = false
+              }
+          }
+        }
         waitUntil { onAllNodesWithText("Close with comment").fetchSemanticsNodes().isNotEmpty() }
         onNodeWithText("Comment").assertIsEnabled()
 
-        // Hold Room's writer so send() suspends while saving, before it can close the composer.
+        // Hold Room's writer before submitting, so the save cannot finish until after dismissal.
         val writeHeld = CompletableDeferred<Unit>()
         val writer = scope.launch {
           db.withWriteTransaction {
@@ -138,43 +150,34 @@ class ReplyScreenTest {
         }
         runBlocking { writeHeld.await() }
         val click =
-          onNodeWithText("Comment").fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+          onNodeWithText(action).fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        val edit =
+          onNodeWithText("Looks good")
+            .fetchSemanticsNode()
+            .config[SemanticsActions.SetText]
+            .action!!
         runOnIdle {
-          // Both callbacks arrive before recomposition can disable the button.
           click()
+          // Stale events arrive before recomposition removes the composer.
           click()
+          edit(androidx.compose.ui.text.AnnotatedString("Edited after submit"))
+          assertEquals(1, closes)
         }
-        onRoot().performKeyInput {
-          keyDown(Key.CtrlLeft)
-          pressKey(Key.Enter)
-          keyUp(Key.CtrlLeft)
-          keyDown(Key.MetaLeft)
-          pressKey(Key.Enter)
-          keyUp(Key.MetaLeft)
-        }
-        runOnIdle { assertEquals(0, closes) }
-        onNodeWithText("Comment").assertIsNotEnabled()
-        onNodeWithText("Close with comment").assertIsNotEnabled()
-        onNodeWithText("Looks good")
-          .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.SetText))
-        onNodeWithContentDescription("Bold (Ctrl+B)").assertIsNotEnabled()
-        onNodeWithText("Looks good").performKeyInput {
-          keyDown(Key.CtrlLeft)
-          pressKey(Key.B)
-          keyUp(Key.CtrlLeft)
-          keyDown(Key.MetaLeft)
-          pressKey(Key.I)
-          keyUp(Key.MetaLeft)
-        }
-        onNodeWithText("Looks good").assertTextEquals("Looks good")
+        waitUntil { onAllNodesWithText("Comment").fetchSemanticsNodes().isEmpty() }
+        runOnIdle { models.clear() }
+        assertEquals(emptyList(), source.comments.toList())
 
         releaseWrite.complete(Unit)
         runBlocking { writer.join() }
-        waitUntil { closes > 0 }
-        waitUntil { source.comments.get() > 0 }
+        waitUntil { source.comments.isNotEmpty() }
+        // The captured body is saved even though the composer was edited, disposed and cleared.
+        assertEquals("Looks good", runBlocking { drafts.get(ref.replyDraft) })
+        source.accept.complete(Unit)
+        waitUntil { runBlocking { drafts.get(ref.replyDraft) == null } }
+        waitUntil { source.closes.get() == if (action == "Comment") 0 else 1 }
         runOnIdle {
           assertEquals(1, closes)
-          assertEquals(1, source.comments.get())
+          assertEquals(listOf("Looks good"), source.comments.toList())
         }
       } finally {
         releaseWrite.complete(Unit)
@@ -186,7 +189,9 @@ class ReplyScreenTest {
 }
 
 private class ReplySource : ThreadSource {
-  val comments = AtomicInteger()
+  val comments = CopyOnWriteArrayList<String>()
+  val closes = AtomicInteger()
+  val accept = CompletableDeferred<Unit>()
 
   override suspend fun load(repo: RepoRef, number: Int, headCount: Int, tailCount: Int) =
     ThreadLoad(
@@ -197,8 +202,9 @@ private class ReplySource : ThreadSource {
     )
 
   override suspend fun addComment(threadId: String, body: String): TimelineItem.Comment {
-    val id = comments.incrementAndGet()
-    return TimelineItem.Comment("posted-$id", Fixtures.now, null, body)
+    comments += body
+    accept.await()
+    return TimelineItem.Comment("posted", Fixtures.now, null, body)
   }
 
   override suspend fun loadTimeline(
@@ -208,8 +214,9 @@ private class ReplySource : ThreadSource {
     count: Int,
   ): TimelinePage = error("Unexpected pagination")
 
-  override suspend fun close(threadId: String, kind: ThreadKind, reason: StateReason?) =
-    error("Unexpected close")
+  override suspend fun close(threadId: String, kind: ThreadKind, reason: StateReason?) {
+    closes.incrementAndGet()
+  }
 
   override suspend fun reopen(threadId: String, kind: ThreadKind) = error("Unexpected reopen")
 

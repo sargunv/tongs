@@ -196,7 +196,6 @@ fun Composer(
   subtitle: String? = null,
   placeholder: String = "Write a comment",
   autoFocus: Boolean = true,
-  readOnly: Boolean = false,
 ) {
   val focus = remember { FocusRequester() }
   val currentActions by rememberUpdatedState(actions)
@@ -214,7 +213,7 @@ fun Composer(
           event.key == Key.Escape -> onClose().let { true }
           command && event.key == Key.Enter ->
             currentActions.firstOrNull { it.primary }?.let(::run).let { true }
-          command && !state.preview && !readOnly -> format(state, event.key)
+          command && !state.preview -> format(state, event.key)
           else -> false
         }
       },
@@ -225,10 +224,10 @@ fun Composer(
         if (state.preview) {
           Preview(state, context)
         } else {
-          Editor(state, placeholder, focus, readOnly)
+          Editor(state, placeholder, focus)
         }
       }
-      if (!state.preview) FormattingBar(state, enabled = !readOnly)
+      if (!state.preview) FormattingBar(state)
       ActionBar(state, actions, ::run)
     }
   }
@@ -280,18 +279,12 @@ private fun Header(state: ComposerState, title: String, subtitle: String?, onClo
 }
 
 @Composable
-private fun Editor(
-  state: ComposerState,
-  placeholder: String,
-  focus: FocusRequester,
-  readOnly: Boolean,
-) {
+private fun Editor(state: ComposerState, placeholder: String, focus: FocusRequester) {
   val colors = MaterialTheme.colorScheme
   val style = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface)
   BasicTextField(
     state = state.text,
     enabled = state.ready,
-    readOnly = readOnly,
     textStyle = style,
     cursorBrush = SolidColor(colors.primary),
     modifier = Modifier.fillMaxSize().focusRequester(focus),
@@ -370,7 +363,7 @@ private fun format(state: ComposerState, key: Key): Boolean {
 }
 
 @Composable
-private fun FormattingBar(state: ComposerState, enabled: Boolean) {
+private fun FormattingBar(state: ComposerState) {
   Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
     Row(
       verticalAlignment = Alignment.CenterVertically,
@@ -381,7 +374,7 @@ private fun FormattingBar(state: ComposerState, enabled: Boolean) {
         val label =
           if (isDesktop && format.label in shortcuts) "${format.label} (${shortcuts[format.label]})"
           else format.label
-        ActionIcon(format.icon, label, { apply(state, format.apply) }, enabled = enabled)
+        ActionIcon(format.icon, label, { apply(state, format.apply) })
       }
     }
   }

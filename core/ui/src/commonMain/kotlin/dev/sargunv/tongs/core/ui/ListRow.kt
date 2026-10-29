@@ -212,15 +212,12 @@ fun ActionIcon(
   label: String,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
-  enabled: Boolean = true,
 ) {
   TooltipBox(
     positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
     tooltip = { PlainTooltip { Text(label) } },
     state = rememberTooltipState(),
   ) {
-    IconButton(onClick = onClick, modifier = modifier, enabled = enabled) {
-      Icon(icon, contentDescription = label)
-    }
+    IconButton(onClick = onClick, modifier = modifier) { Icon(icon, contentDescription = label) }
   }
 }

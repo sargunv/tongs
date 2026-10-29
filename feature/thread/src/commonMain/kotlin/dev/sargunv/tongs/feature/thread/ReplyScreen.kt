@@ -2,10 +2,7 @@ package dev.sargunv.tongs.feature.thread
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.sargunv.tongs.core.composer.Composer
 import dev.sargunv.tongs.core.composer.ComposerAction
@@ -17,7 +14,6 @@ import dev.sargunv.tongs.core.ui.TongsIcons
 import dev.sargunv.tongs.forge.api.ThreadDetail
 import dev.sargunv.tongs.forge.api.ThreadKind
 import dev.sargunv.tongs.forge.api.ThreadState
-import kotlinx.coroutines.launch
 
 /** The composer replying to a thread, with Comment and Close or Reopen with comment. */
 @Composable
@@ -25,28 +21,15 @@ fun ReplyScreen(viewModel: ReplyViewModel, onClose: () -> Unit) {
   val snapshot by viewModel.snapshot.collectAsStateWithLifecycle()
   val webUrl by viewModel.webUrl.collectAsStateWithLifecycle()
   val state = rememberComposerState(viewModel.ref.replyDraft, viewModel.drafts)
-  val scope = rememberCoroutineScope()
-  var sending by remember(state) { mutableStateOf(false) }
   ReplyContent(
     state = state,
     detail = snapshot?.detail,
     number = viewModel.ref.number,
     repo = viewModel.ref.repo.toString(),
     webUrl = webUrl,
-    sending = sending,
     onSend = { body, close, reopen ->
-      if (!sending) {
-        sending = true
-        scope.launch {
-          try {
-            viewModel.send(body, close, reopen)
-            state.markSent()
-            onClose()
-          } finally {
-            sending = false
-          }
-        }
-      }
+      state.markSent()
+      if (viewModel.send(body, close, reopen)) onClose()
     },
     onClose = onClose,
   )
@@ -62,7 +45,6 @@ fun ReplyContent(
   webUrl: String,
   onSend: (body: String, close: Boolean, reopen: Boolean) -> Unit,
   onClose: () -> Unit,
-  sending: Boolean = false,
 ) {
   val context = remember(webUrl, detail?.repo) { MarkdownContext(webUrl, detail?.repo) }
   val blank = state.isBlank
@@ -75,7 +57,6 @@ fun ReplyContent(
           onClick = { onSend(it, true, false) },
           icon = ConversationIcons.CheckCircle,
           allowsEmpty = true,
-          enabled = !sending,
         ),
       )
     }
@@ -86,7 +67,6 @@ fun ReplyContent(
           onClick = { onSend(it, false, true) },
           icon = TongsIcons.Undo,
           allowsEmpty = true,
-          enabled = !sending,
         ),
       )
     }
@@ -96,7 +76,7 @@ fun ReplyContent(
         onClick = { onSend(it, false, false) },
         icon = ConversationIcons.Send,
         primary = true,
-        enabled = !sending && detail?.viewer?.canComment != false,
+        enabled = detail?.viewer?.canComment != false,
       ),
     )
   }
@@ -107,6 +87,5 @@ fun ReplyContent(
     actions = actions,
     onClose = onClose,
     context = context,
-    readOnly = sending,
   )
 }

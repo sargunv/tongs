@@ -20,6 +20,7 @@ import dev.sargunv.tongs.forge.api.SubjectType
 import dev.zacsweers.metro.Assisted
 import dev.zacsweers.metro.AssistedFactory
 import dev.zacsweers.metro.AssistedInject
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
@@ -186,6 +187,7 @@ class ReplyViewModel(
   private val threads: ThreadRepository,
   val drafts: DraftRepository,
   accounts: AccountRepository,
+  private val appScope: CoroutineScope,
 ) : ViewModel() {
   val ref = ThreadRef(route.thread.accountId, route.thread.repo, route.thread.number ?: 0)
 
@@ -197,17 +199,21 @@ class ReplyViewModel(
   }
     .stateIn(viewModelScope, SharingStarted.Eagerly, Instance.GitHubDotCom.webUrl)
 
-  /**
-   * Saves [body] and queues the send before the composer stops autosaving and closes. The
-   * repository runs the forge call in the app's scope.
-   */
-  suspend fun send(body: String, close: Boolean = false, reopen: Boolean = false) {
-    threads.comment(
-      ref,
-      body,
-      close = if (close) StateReason.Completed else null,
-      reopen = reopen,
-    )
+  private var sent = false
+
+  /** Saves and queues once per composer, in the app scope so dismissal cannot cancel it. */
+  fun send(body: String, close: Boolean = false, reopen: Boolean = false): Boolean {
+    if (sent) return false
+    sent = true
+    appScope.launch {
+      threads.comment(
+        ref,
+        body,
+        close = if (close) StateReason.Completed else null,
+        reopen = reopen,
+      )
+    }
+    return true
   }
 
   @AssistedFactory

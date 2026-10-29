@@ -107,5 +107,6 @@ fun ReplyContent(
     actions = actions,
     onClose = onClose,
     context = context,
+    readOnly = sending,
   )
 }

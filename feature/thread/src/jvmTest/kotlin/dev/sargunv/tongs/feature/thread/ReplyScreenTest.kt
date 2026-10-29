@@ -3,9 +3,13 @@ package dev.sargunv.tongs.feature.thread
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performKeyInput
@@ -55,7 +59,7 @@ import kotlinx.coroutines.runBlocking
 @OptIn(ExperimentalTestApi::class)
 class ReplyScreenTest {
   @Test
-  fun repeatedSubmissionsWhileSavingQueueOnlyOneReply() =
+  fun savingMakesComposerReadOnlyAndQueuesOnlyOneReply() =
     runDesktopComposeUiTest(width = 700, height = 640) {
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
       val db =
@@ -151,6 +155,18 @@ class ReplyScreenTest {
         runOnIdle { assertEquals(0, closes) }
         onNodeWithText("Comment").assertIsNotEnabled()
         onNodeWithText("Close with comment").assertIsNotEnabled()
+        onNodeWithText("Looks good")
+          .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.SetText))
+        onNodeWithContentDescription("Bold (Ctrl+B)").assertIsNotEnabled()
+        onNodeWithText("Looks good").performKeyInput {
+          keyDown(Key.CtrlLeft)
+          pressKey(Key.B)
+          keyUp(Key.CtrlLeft)
+          keyDown(Key.MetaLeft)
+          pressKey(Key.I)
+          keyUp(Key.MetaLeft)
+        }
+        onNodeWithText("Looks good").assertTextEquals("Looks good")
 
         releaseWrite.complete(Unit)
         runBlocking { writer.join() }

@@ -1,12 +1,28 @@
 package dev.sargunv.tongs.feature.thread
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.runDesktopComposeUiTest
+import androidx.compose.ui.unit.dp
 import dev.sargunv.tongs.core.composer.rememberPreviewComposerState
 import dev.sargunv.tongs.core.data.DraftKey
+import dev.sargunv.tongs.core.markdown.CodeHighlighter
+import dev.sargunv.tongs.core.markdown.LocalCodeHighlighter
+import dev.sargunv.tongs.core.markdown.MarkdownContext
 import dev.sargunv.tongs.core.navigation.Route
 import dev.sargunv.tongs.core.ui.TongsTheme
+import dev.sargunv.tongs.forge.api.Actor
+import dev.sargunv.tongs.forge.api.ReviewState
+import dev.sargunv.tongs.forge.api.TimelineItem
 import io.github.takahirom.roborazzi.captureRoboImage
 import kotlin.test.Test
 
@@ -27,15 +43,18 @@ class ThreadScreenshotTest {
     runDesktopComposeUiTest(width = width, height = height) {
       setContent {
         TongsTheme(darkTheme = dark) {
-          ThreadContent(
-            route = route,
-            state = state,
-            now = Fixtures.now,
-            actions = ThreadActions.None,
-            onBack = {},
-            onOpenChanges = {},
-            onOpenLink = {},
-          )
+          // The golden uses plain fences; don't race the engine's background highlighting.
+          CompositionLocalProvider(LocalCodeHighlighter provides CodeHighlighter.Plain) {
+            ThreadContent(
+              route = route,
+              state = state,
+              now = Fixtures.now,
+              actions = ThreadActions.None,
+              onBack = {},
+              onOpenChanges = {},
+              onOpenLink = {},
+            )
+          }
         }
       }
       waitForIdle()
@@ -79,6 +98,53 @@ class ThreadScreenshotTest {
       ThreadUiState(notificationTitle = "Stream packs into the object store as they arrive"),
       height = 600,
     )
+
+  @Test fun emptyReviewVerdictsFolded() = emptyReviewVerdicts(360)
+
+  @Test fun emptyReviewVerdictsUnfolded() = emptyReviewVerdicts(700)
+
+  @Test fun emptyReviewVerdictsDesktop() = emptyReviewVerdicts(1000)
+
+  private fun emptyReviewVerdicts(width: Int) =
+    runDesktopComposeUiTest(width = width, height = 420) {
+      setContent {
+        TongsTheme(darkTheme = false) {
+          Surface(Modifier.fillMaxSize()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+              val env =
+                TimelineEnv(
+                  context = MarkdownContext("https://github.com", Fixtures.repo),
+                  now = Fixtures.now,
+                  actions = ThreadActions.None,
+                  canReact = false,
+                  canComment = false,
+                  isPullRequest = true,
+                  openInBrowser = {},
+                )
+              for (state in
+                listOf(
+                  ReviewState.Approved,
+                  ReviewState.ChangesRequested,
+                  ReviewState.Dismissed,
+                  ReviewState.Commented,
+                )) {
+                TimelineRowView(
+                  TimelineRow.Review(
+                    TimelineItem.Review(state.raw, Fixtures.now, Actor("mona"), state, body = ""),
+                    emptyList(),
+                  ),
+                  env,
+                )
+              }
+            }
+          }
+        }
+      }
+      waitForIdle()
+      onNodeWithText("approved").assertIsDisplayed()
+      onNodeWithText("requested changes").assertIsDisplayed()
+      onRoot().captureRoboImage("src/jvmTest/snapshots/empty-review-verdicts-$width.png")
+    }
 
   @Test fun composer() = composer("composer", dark = false)
 

@@ -199,11 +199,12 @@ class ReplyViewModel(
   }
     .stateIn(viewModelScope, SharingStarted.Eagerly, Instance.GitHubDotCom.webUrl)
 
-  /**
-   * Posts [body], then closes or reopens the thread if asked. Runs in the app's scope, since the
-   * composer closes at once.
-   */
-  fun send(body: String, close: Boolean = false, reopen: Boolean = false) {
+  private var sent = false
+
+  /** Saves and queues once per composer, in the app scope so dismissal cannot cancel it. */
+  fun send(body: String, close: Boolean = false, reopen: Boolean = false): Boolean {
+    if (sent) return false
+    sent = true
     appScope.launch {
       threads.comment(
         ref,
@@ -212,6 +213,7 @@ class ReplyViewModel(
         reopen = reopen,
       )
     }
+    return true
   }
 
   @AssistedFactory

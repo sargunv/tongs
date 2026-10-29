@@ -140,12 +140,36 @@ query Thread(
           ...ThreadPullRequestTimeline
         }
         reviewThreads(last: 100) {
-          nodes {
-            ...ThreadReviewThread
-          }
+          ...ThreadReviewThreadsPage
         }
       }
     }
+  }
+}
+
+# Older inline discussions, walking back from the newest page in Thread.
+query ThreadReviewThreads(
+  $owner: String!
+  $name: String!
+  $number: Int!
+  $cursor: String!
+) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(last: 100, before: $cursor) {
+        ...ThreadReviewThreadsPage
+      }
+    }
+  }
+}
+
+fragment ThreadReviewThreadsPage on PullRequestReviewThreadConnection {
+  pageInfo {
+    hasPreviousPage
+    startCursor
+  }
+  nodes {
+    ...ThreadReviewThread
   }
 }
 

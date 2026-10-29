@@ -81,6 +81,9 @@ interface DraftDao {
   @Query("DELETE FROM draft WHERE accountId = :accountId AND `key` = :key")
   suspend fun delete(accountId: Long, key: String)
 
+  @Query("DELETE FROM draft WHERE accountId = :accountId AND `key` = :key AND body = :body")
+  suspend fun deleteIf(accountId: Long, key: String, body: String)
+
   @Query(
     """
     SELECT COUNT(*) > 0 FROM draft
@@ -149,6 +152,10 @@ class DraftRepository(
   }
 
   suspend fun delete(key: DraftKey) = dao.delete(key.accountId, key.value)
+
+  /** Deletes the draft if it's still [body]: for a sent draft, keeping what was written since. */
+  suspend fun deleteIfUnchanged(key: DraftKey, body: String) =
+    dao.deleteIf(key.accountId, key.value, body)
 
   /** Whether the issue or PR has a draft in any slot. */
   fun hasDraft(accountId: Long, repo: RepoRef, number: Int): Flow<Boolean> =

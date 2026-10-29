@@ -1,0 +1,36 @@
+# Feed hydration. GitHubFeedHydrator sends these batched, each `repository` field repeated under an
+# alias per subject or push with its variables renamed to match, like InboxHydration.
+#
+# One issue or PR's current title and state. No connections, so it costs nothing beyond the query.
+query FeedSubject($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue {
+        title
+        issueState: state
+        stateReason
+      }
+      ... on PullRequest {
+        title
+        prState: state
+        isDraft
+      }
+    }
+  }
+}
+
+# A new branch's comparison base, or its head when it created the default branch.
+query FeedPush($owner: String!, $name: String!, $head: GitObjectID!) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef {
+      name
+    }
+    object(oid: $head) {
+      ... on Commit {
+        oid
+        messageHeadline
+      }
+    }
+  }
+}

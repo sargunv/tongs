@@ -574,6 +574,15 @@ express that, so its adapter will have to narrow such a range.
   - Group by repo or by person.
   - Mute repos and actors locally.
 
+- **As built:** foreground conditional polling honors the largest
+  `X-Poll-Interval` across streams. Room retains the newest 5,000 events per
+  account. Each poll hydrates up to 100 subjects in GraphQL and ten pushes
+  through REST compare (one extra page for long pushes); a new branch uses the
+  default branch as its comparison base. Issues and PRs open in the thread
+  screen; pushes open their comparison on the web, since the native changes view
+  currently needs a PR. Local mutes have Undo, and the feed can group by repo or
+  person. The live feed test reports poll and hydration cost.
+
 ## Navigation and screens
 
 **Routing.**
@@ -593,8 +602,8 @@ express that, so its adapter will have to narrow such a range.
   - Opening a thread while another is open replaces it rather than stacking.
   - A bottom bar when folded, hidden on screens below the top level; a rail
     otherwise, always shown.
-  - PR changes and Settings take the full window beside the rail; Activity too,
-    until it has items to open.
+  - PR changes and Settings take the full window beside the rail; Activity opens
+    issues and PRs beside its list, as the inbox does.
 
 **Screens.**
 

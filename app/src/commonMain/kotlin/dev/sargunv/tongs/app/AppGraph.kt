@@ -2,6 +2,7 @@ package dev.sargunv.tongs.app
 
 import dev.sargunv.tongs.core.data.AccountRepository
 import dev.sargunv.tongs.core.data.AppEnvironment
+import dev.sargunv.tongs.core.data.FeedSync
 import dev.sargunv.tongs.core.data.InboxRepository
 import dev.sargunv.tongs.core.data.InboxSync
 import dev.sargunv.tongs.core.navigation.RouteEntries
@@ -25,6 +26,7 @@ interface AppGraph {
   val accounts: AccountRepository
   val inbox: InboxRepository
   val inboxSync: InboxSync
+  val feedSync: FeedSync
   val environment: AppEnvironment
   val httpClient: HttpClient
 

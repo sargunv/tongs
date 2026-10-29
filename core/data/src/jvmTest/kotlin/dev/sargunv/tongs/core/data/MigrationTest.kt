@@ -53,6 +53,40 @@ class MigrationTest {
   }
 
   @Test
+  fun addsFeedTablesWithoutLosingTheInbox() = runTest {
+    val dir = createTempDirectory("tongs-feed-migration").toFile()
+    try {
+      val path = dir.resolve("tongs.db").path
+      createAt(
+        path,
+        5,
+        """
+        INSERT INTO account (id, forge, webUrl, apiUrl, userId, login, authMethod, capabilities, missingScopes)
+        VALUES (1, 'GitHub', 'https://github.com', 'https://api.github.com', 'U_1', 'octocat', 'ClassicToken', '', '')
+        """,
+        """
+        INSERT INTO inbox_thread (accountId, id, repoOwner, repoName, title, subjectType, reason, unread, updatedAt, pendingRead, pendingDone, localUnread)
+        VALUES (1, '7', 'octo', 'hello', 'Keep this', 'Issue', 'author', 0, 0, 0, 0, 0)
+        """,
+      )
+      val db =
+        Room.databaseBuilder<TongsDatabase>(path, factory = TongsDatabaseConstructor::initialize)
+          .setDriver(BundledSQLiteDriver())
+          .build()
+      try {
+        assertEquals("Keep this", db.inbox().thread(1, "7")?.title)
+        assertEquals(emptyList(), db.feed().events(1))
+        db.feed().upsertMute(FeedMuteEntity(1, "Repo", "octo/hello", 0))
+        assertEquals(1, db.accounts().all().size)
+      } finally {
+        db.close()
+      }
+    } finally {
+      dir.deleteRecursively()
+    }
+  }
+
+  @Test
   fun dropsKeptForReadElsewhere() = runTest {
     val dir = createTempDirectory("tongs-migration").toFile()
     try {

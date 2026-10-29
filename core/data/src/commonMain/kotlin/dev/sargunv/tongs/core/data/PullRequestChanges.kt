@@ -409,21 +409,25 @@ class PullRequestChangesRepository(
         } else {
           val reviewId =
             remote
-              ?: api.startPendingReview(
-                overview?.nodeId ?: error("The PR hasn't loaded yet"),
-                commit,
-                lines.map { DraftReviewComment(checkNotNull(it.anchor), it.body) },
-              )
+              ?: api
+                .startPendingReview(
+                  overview?.nodeId ?: error("The PR hasn't loaded yet"),
+                  commit,
+                  lines.map { DraftReviewComment(checkNotNull(it.anchor), it.body) },
+                )
+                .also { drafts.accepted(lines) }
           if (remote != null)
-            for (line in lines) api.addToPendingReview(
-              reviewId,
-              DraftReviewComment(checkNotNull(line.anchor), line.body),
-            )
-          for (reply in replies) api.reply(
-            checkNotNull(reply.inReplyTo),
-            reply.body,
-            pendingReviewId = reviewId,
-          )
+            for (line in lines) {
+              api.addToPendingReview(
+                reviewId,
+                DraftReviewComment(checkNotNull(line.anchor), line.body),
+              )
+              drafts.accepted(listOf(line))
+            }
+          for (reply in replies) {
+            api.reply(checkNotNull(reply.inReplyTo), reply.body, pendingReviewId = reviewId)
+            drafts.accepted(listOf(reply))
+          }
           api.submitPendingReview(reviewId, event, summary)
         }
       } finally {

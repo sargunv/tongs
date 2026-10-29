@@ -289,6 +289,13 @@ internal constructor(
       }
     }
 
+  internal fun delete() =
+    synchronized(this) {
+      if (locked.value) return
+      clear()
+      enqueue { dao.delete(key.accountId, key.value) }
+    }
+
   internal fun enqueue(command: suspend () -> Unit) {
     commands.trySend(command).getOrThrow()
   }
@@ -354,16 +361,19 @@ class DraftRepository(
 
   suspend fun delete(key: DraftKey) {
     val writer = writer(key)
-    if (writer.locked.value) return
-    writer.enqueue {
-      dao.delete(key.accountId, key.value)
-      writer.clear()
-    }
+    writer.ready.first { it }
+    writer.delete()
     writer.flush()
   }
 
   fun all(key: PullRequestKey): Flow<List<DraftEntity>> =
     dao.observeAll(key.accountId, key.repo.owner, key.repo.name, key.number)
+
+  /** Retire rows as soon as the forge accepts them, including during a partial submission. */
+  internal suspend fun accepted(rows: List<DraftEntity>) {
+    dao.deleteSubmitted(rows.map { it.id })
+    rows.forEach { writer(it.draftKey).clear() }
+  }
 
   /** Preparation, claim, delivery and settlement all outlive the screen. No replay on restart. */
   fun submitReview(
@@ -435,14 +445,16 @@ class DraftRepository(
           rows
         }
         deliver(rows)
-        dao.deleteSubmitted(ids)
-        editors.forEach { it.clear() }
+        accepted(rows)
         true
       } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
       } catch (e: Exception) {
         dao.submitting(ids, false)
-        editors.forEach { it.error.value = e.message ?: "Couldn't submit" }
+        editors.forEach {
+          if (dao.get(it.key.accountId, it.key.value) != null)
+            it.error.value = e.message ?: "Couldn't submit"
+        }
         false
       } finally {
         editors.forEach { it.locked.value = false }

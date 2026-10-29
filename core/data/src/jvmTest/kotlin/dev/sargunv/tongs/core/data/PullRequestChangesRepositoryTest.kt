@@ -96,11 +96,14 @@ class FakeReviews : PullRequestReviews {
     comments: List<DraftReviewComment>,
   ): String {
     call("start $pullRequestId@$commitOid ${comments.map { it.body }}")
+    pendingReview = PendingReview("R_new", "", comments.size)
     return "R_new"
   }
 
-  override suspend fun addToPendingReview(reviewId: String, comment: DraftReviewComment) =
+  override suspend fun addToPendingReview(reviewId: String, comment: DraftReviewComment) {
     call("add $reviewId: ${comment.body}")
+    pendingReview = pendingReview?.let { it.copy(commentCount = it.commentCount + 1) }
+  }
 
   override suspend fun submitPendingReview(reviewId: String, event: ReviewEvent, body: String) =
     call("submit $reviewId $event: $body")
@@ -410,22 +413,108 @@ class PullRequestChangesRepositoryTest {
   }
 
   @Test
-  fun aFailedStepUnlocksAllTextWithoutReceiptsOrAutomaticReplay() = dbTest { db ->
+  fun aFailedSecondStepRetriesOnlyTheUnacceptedDraftAfterContinue() = dbTest { db ->
     val (repo, key) = repository(db)
     forge.threads = listOf(thread("T1", comment("C1", "First")))
     repo.refresh(key)
-    repo.saveDraft(key, ReviewAnchor("head1", "src/b.kt", DiffSide.New, 2, 2), "New thread")
+    val line =
+      repo.saveDraft(key, ReviewAnchor("head1", "src/b.kt", DiffSide.New, 2, 2), "New thread")
+    val lineKey = db.drafts().byId(line)!!.draftKey
     repo.saveDraft(
       key,
       ReviewAnchor("head1", "src/a.kt", DiffSide.New, 4, 4),
       "Agreed",
       inReplyTo = "T1",
     )
+    repo.setSummary(key, "Two things")
+    // The next refresh sees the line comment staged by startPendingReview.
+    forge.threads += thread("T2", comment("C2", "New thread", pending = true))
     forge.refuse = "reply"
     assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
-    // No step receipts: all text remains editable after failure.
-    assertEquals(listOf("New thread", "Agreed"), repo.drafts(key).first().map { it.body })
+    assertEquals(listOf("Agreed"), repo.drafts(key).first().map { it.body })
     assertTrue(repo.drafts(key).first().none { it.submitting })
+    assertNull(db.drafts().byId(line))
+    assertEquals("", drafts.writer(lineKey).body.value)
+    assertFalse(drafts.writer(lineKey).inReview.value)
+    assertNull(drafts.writer(lineKey).error.value)
+    assertEquals("Two things", repo.summary(key).first())
+    assertEquals("R_new", repo.overview(key).first()!!.pendingReviewId)
+    assertEquals(CommentState.Pending, repo.threads(key).first().last().comments.single().state)
+
+    forge.refuse = null
+    // Continuing is explicit; simply retrying cannot stage anything else.
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(2, forge.calls.size)
+    repo.continuePendingReview(key)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(
+      listOf(
+        "start PR_1@head1 [New thread]",
+        "reply T1 R_new: Agreed",
+        "reply T1 R_new: Agreed",
+        "submit R_new Comment: Two things",
+      ),
+      forge.calls,
+    )
+    assertTrue(repo.drafts(key).first().isEmpty())
+  }
+
+  @Test
+  fun aFailedSecondStagedLineRetriesOnlyTheRemainingLines() = dbTest { db ->
+    val (repo, key) = repository(db)
+    forge.pendingReview = PendingReview("R_web", "Summary", 0)
+    repo.refresh(key)
+    repo.continuePendingReview(key)
+    val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 2, 2)
+    for (body in listOf("One", "Two", "Three")) repo.saveDraft(key, anchor, body)
+    forge.refuse = "add R_web: Two"
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(listOf("Two", "Three"), repo.drafts(key).first().map { it.body })
+    assertTrue(repo.drafts(key).first().none { it.submitting })
+    assertEquals(1, repo.overview(key).first()!!.pendingReviewComments)
+    forge.refuse = null
+    repo.continuePendingReview(key)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(
+      listOf(
+        "add R_web: One",
+        "add R_web: Two",
+        "add R_web: Two",
+        "add R_web: Three",
+        "submit R_web Comment: Summary",
+      ),
+      forge.calls,
+    )
+  }
+
+  @Test
+  fun aFailedFinalSubmitDoesNotRestageAcceptedLinesOrReplies() = dbTest { db ->
+    val (repo, key) = repository(db)
+    forge.pendingReview = PendingReview("R_web", "Summary", 0)
+    repo.refresh(key)
+    repo.continuePendingReview(key)
+    val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 2, 2)
+    repo.saveDraft(key, anchor, "Line")
+    val reply = repo.saveDraft(key, anchor, "Reply", inReplyTo = "T1")
+    val replyKey = db.drafts().byId(reply)!!.draftKey
+    forge.refuse = "submit"
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertTrue(repo.drafts(key).first().isEmpty())
+    assertEquals("", drafts.writer(replyKey).body.value)
+    assertFalse(drafts.writer(replyKey).inReview.value)
+    assertEquals("Summary", repo.summary(key).first())
+    forge.refuse = null
+    repo.continuePendingReview(key)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(
+      listOf(
+        "add R_web: Line",
+        "reply T1 R_web: Reply",
+        "submit R_web Comment: Summary",
+        "submit R_web Comment: Summary",
+      ),
+      forge.calls,
+    )
   }
 
   @Test
@@ -536,6 +625,30 @@ class PullRequestChangesRepositoryTest {
     advanceUntilIdle()
     assertTrue(forge.calls.isEmpty())
     assertTrue(dao.viewed(key.accountId, key.repo.owner, key.repo.name, key.number).isEmpty())
+  }
+
+  @Test
+  fun discardingASummaryWhileTheWriterIsBusyPreservesNewerInput() = dbTest { db ->
+    val (_, key) = repository(db)
+    val summary = DraftKey.summary(key)
+    drafts.save(summary, "Discard this")
+    val writer = drafts.writer(summary)
+    val busy = CompletableDeferred<Unit>()
+    writer.enqueue { busy.await() }
+    val deletion = async { drafts.delete(summary) }
+    runCurrent()
+    assertEquals("", writer.body.value)
+    assertTrue(writer.write("New text"))
+    busy.complete(Unit)
+    deletion.await()
+    writer.flush()
+    assertEquals("New text", writer.body.value)
+    assertEquals("New text", drafts.get(summary))
+    assertTrue(writer.inReview.value)
+    // Subsequent input starts from the text still displayed in the composer.
+    assertTrue(writer.write(writer.body.value + " continued"))
+    writer.flush()
+    assertEquals("New text continued", drafts.get(summary))
   }
 
   @Test

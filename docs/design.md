@@ -734,11 +734,14 @@ express that, so its adapter will have to narrow such a range.
       its field projection; queued writes and quote appends belong to the app.
     - Submission reserves the drafts synchronously, disabling input and repeated
       sends before waiting for Room. One transaction reads and marks the rows
-      `submitting`; the app performs network calls outside it, then deletes the
-      rows on success or unlocks them with an error on failure. Dismissal cannot
-      cancel preparation or delivery. At startup, leftover claims become
-      editable with “May have been sent”; they are never replayed automatically.
-      There is no outbox, step receipt journal, or reconciliation engine.
+      `submitting`; the app performs network calls outside it, then deletes each
+      row as soon as the server accepts it, or unlocks unaccepted rows with an
+      error on failure. Accepted comments remain in the forge's pending review;
+      refresh and explicit Continue resume it without staging them again.
+      Dismissal cannot cancel preparation or delivery. At startup, leftover
+      claims become editable with “May have been sent”; they are never replayed
+      automatically. There is no outbox, step receipt journal, or reconciliation
+      engine.
     - The toolbar has bold, italic, strikethrough, heading, code (a fence when
       the selection spans lines), link, quote, lists, task list, and mention;
       Ctrl/⌘ B, I, E, K format, Ctrl/⌘+Enter comments, and Escape closes.

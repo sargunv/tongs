@@ -33,8 +33,13 @@ import kotlinx.coroutines.IO
       DraftReviewEntity::class,
       ChangesThreadEntity::class,
       ChangesThreadCommentEntity::class,
+      // The activity feed; see FeedDao.kt.
+      FeedEventEntity::class,
+      FeedSubjectEntity::class,
+      FeedSyncEntity::class,
+      FeedMuteEntity::class,
     ],
-  version = 6,
+  version = 7,
   autoMigrations =
     [
       AutoMigration(from = 1, to = 2),
@@ -42,6 +47,7 @@ import kotlinx.coroutines.IO
       AutoMigration(from = 3, to = 4),
       AutoMigration(from = 4, to = 5, spec = DropKept::class),
       AutoMigration(from = 5, to = 6),
+      AutoMigration(from = 6, to = 7),
     ],
 )
 @ConstructedBy(TongsDatabaseConstructor::class)
@@ -57,6 +63,8 @@ abstract class TongsDatabase : RoomDatabase() {
   abstract fun drafts(): DraftDao
 
   abstract fun pullRequestChanges(): PullRequestChangesDao
+
+  abstract fun feed(): FeedDao
 }
 
 /**

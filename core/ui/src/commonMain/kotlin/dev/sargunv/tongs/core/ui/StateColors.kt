@@ -6,7 +6,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
-import com.materialkolor.ktx.harmonizeWithPrimary
+import com.materialkolor.material3.ktx.harmonizeWithPrimary
 
 /**
  * Colors for an issue's or PR's state and its checks, the hues people know from forges (green open,

@@ -72,7 +72,8 @@ data class InboxQuery(
           // An open draft isn't open for review, but GitHub's is:open includes drafts; so do we.
           else -> row.subjectState.equals(value, ignoreCase = true)
         }
-      Kind.Snoozed -> true
+      // The query picks the list rows come from: the snoozed ones, or the inbox, which hides them.
+      Kind.Snoozed -> wantsSnoozed
       Kind.Repo ->
         if ('/' in value) "${row.repoOwner}/${row.repoName}".lowercase() == value
         else row.repoName.lowercase() == value

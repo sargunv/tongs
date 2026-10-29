@@ -19,6 +19,8 @@ kotlin {
     jvmTest.dependencies {
       implementation(compose.desktop.currentOs)
       implementation(libs.compose.ui.test)
+      implementation(libs.sqlite.bundled)
+      implementation(libs.kotlinx.coroutines.swing)
       implementation(libs.roborazzi.compose.desktop)
     }
   }

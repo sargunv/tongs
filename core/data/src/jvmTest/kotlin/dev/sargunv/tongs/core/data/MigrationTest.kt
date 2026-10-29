@@ -3,12 +3,15 @@ package dev.sargunv.tongs.core.data
 import androidx.room3.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import androidx.sqlite.execSQL
+import dev.sargunv.tongs.forge.api.InboxPoll
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -59,7 +62,7 @@ class MigrationTest {
       val path = dir.resolve("tongs.db").path
       createAt(
         path,
-        5,
+        6,
         """
         INSERT INTO account (id, forge, webUrl, apiUrl, userId, login, authMethod, capabilities,
           missingScopes)
@@ -85,9 +88,17 @@ class MigrationTest {
         INSERT INTO changes_thread_comment (accountId, id, threadId, body, createdAt, position)
         VALUES (1, 'C1', 'T1', 'Published', 1, 0)
         """,
+        """
+        INSERT INTO feed_mute (accountId, kind, value, createdAt)
+        VALUES (1, 'Repo', 'octo/hello', 42)
+        """,
       )
       val db = openDatabase(path)
       try {
+        assertEquals(
+          listOf(FeedMuteEntity(1, "Repo", "octo/hello", 42)),
+          db.feed().observeMutes().first(),
+        )
         val dao = db.pullRequestChanges()
         val overview = dao.overview(1, "octo", "hello", 7)!!
         assertEquals("head1", overview.headOid)
@@ -107,6 +118,40 @@ class MigrationTest {
           CommentState.Published,
           dao.observeThreadComments(1, "octo", "hello", 7).first().single().state,
         )
+      } finally {
+        db.close()
+      }
+    } finally {
+      dir.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun addsFeedTablesWithoutLosingTheInbox() = runTest {
+    val dir = createTempDirectory("tongs-feed-migration").toFile()
+    try {
+      val path = dir.resolve("tongs.db").path
+      createAt(
+        path,
+        5,
+        """
+        INSERT INTO account (id, forge, webUrl, apiUrl, userId, login, authMethod, capabilities, missingScopes)
+        VALUES (1, 'GitHub', 'https://github.com', 'https://api.github.com', 'U_1', 'octocat', 'ClassicToken', '', '')
+        """,
+        """
+        INSERT INTO inbox_thread (accountId, id, repoOwner, repoName, title, subjectType, reason, unread, updatedAt, pendingRead, pendingDone, localUnread)
+        VALUES (1, '7', 'octo', 'hello', 'Keep this', 'Issue', 'author', 0, 0, 0, 0, 0)
+        """,
+      )
+      val db =
+        Room.databaseBuilder<TongsDatabase>(path, factory = TongsDatabaseConstructor::initialize)
+          .setDriver(BundledSQLiteDriver())
+          .build()
+      try {
+        assertEquals("Keep this", db.inbox().thread(1, "7")?.title)
+        assertEquals(emptyList(), db.feed().events(1))
+        db.feed().upsertMute(FeedMuteEntity(1, "Repo", "octo/hello", 0))
+        assertEquals(1, db.accounts().all().size)
       } finally {
         db.close()
       }
@@ -143,6 +188,51 @@ class MigrationTest {
         val thread = db.inbox().thread(1, "7")!!
         assertEquals("Read here", thread.title)
         assertEquals(false, thread.readElsewhere)
+      } finally {
+        db.close()
+      }
+    } finally {
+      dir.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun versionOneLocalTriageSurvivesMigrationAndAFullPoll() = runTest {
+    val dir = createTempDirectory("tongs-migration").toFile()
+    try {
+      val path = dir.resolve("tongs.db").path
+      createAt(
+        path,
+        1,
+        """
+        INSERT INTO account (id, forge, webUrl, apiUrl, userId, login, authMethod, capabilities,
+          missingScopes)
+        VALUES (1, 'GitHub', 'https://github.com', 'https://api.github.com', 'U_1', 'octocat',
+          'ClassicToken', '', '')
+        """,
+        """
+        INSERT INTO inbox_thread (accountId, id, repoOwner, repoName, title, subjectType, reason,
+          unread, updatedAt, pendingRead, pendingDone, localUnread, snoozedUntil)
+        VALUES (1, '1', 'octo', 'hello', 'Local unread', 'Issue', 'author', 0, 0, 0, 0, 1, NULL),
+          (1, '2', 'octo', 'hello', 'Snoozed', 'Issue', 'author', 0, 0, 0, 0, 0, 10000)
+        """,
+      )
+      val db =
+        Room.databaseBuilder<TongsDatabase>(path, factory = TongsDatabaseConstructor::initialize)
+          .setDriver(BundledSQLiteDriver())
+          .build()
+      try {
+        val inbox = FakeInbox()
+        val (account, clients) = signIn(db, inbox)
+        val clock =
+          object : Clock {
+            override fun now() = Instant.fromEpochMilliseconds(0)
+          }
+        inbox.polls += InboxPoll.Changed(emptyList(), true, null, null)
+        InboxSync(db, clients, clock).poll(account)
+        assertEquals(setOf("1", "2"), db.inbox().threads(account).map { it.id }.toSet())
+        assertEquals(true, db.inbox().thread(account, "1")!!.localUnread)
+        assertEquals(10000L, db.inbox().thread(account, "2")!!.snoozedUntil)
       } finally {
         db.close()
       }

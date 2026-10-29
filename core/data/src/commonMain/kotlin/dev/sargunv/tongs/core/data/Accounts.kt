@@ -1,5 +1,6 @@
 package dev.sargunv.tongs.core.data
 
+import androidx.room3.withWriteTransaction
 import dev.sargunv.tongs.forge.api.Account
 import dev.sargunv.tongs.forge.api.AuthProvider
 import dev.sargunv.tongs.forge.api.ForgeAdapter
@@ -58,10 +59,14 @@ class AccountRepository(
         capabilities = verified.capabilities.joinToString(",") { it.id },
         missingScopes = verified.missingScopes.joinToString(","),
       )
-    val id = existing?.id ?: dao.upsert(entity)
-    if (existing != null) dao.upsert(entity)
-    tokens.put(id, token.trim())
-    clients.evict(id)
+    // Observers (including the first inbox poll) must only see accounts with stored tokens.
+    val id = db.withWriteTransaction {
+      val id = existing?.id ?: dao.upsert(entity)
+      if (existing != null) dao.upsert(entity)
+      tokens.put(id, token.trim())
+      id
+    }
+    if (existing != null) clients.evict(id)
     return SignedInAccount(entity.copy(id = id).toAccount(), verified.missingScopes)
   }
 

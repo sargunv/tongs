@@ -34,10 +34,11 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   `summarizeWhatsNew`), and the ports each forge adapter implements:
   `ForgeAdapter` (registered in a map by `ForgeKind`), `AuthProvider` with the
   OAuth device flow, `InboxSource`, `InboxHydrator`, `ReviewSource`, and
-  `ThreadSource` with the conversation model in `Thread.kt` (`ThreadDetail`,
-  typed `TimelineItem`s, `ReviewThread`, and open enums that serialize as their
-  raw value), and `PullRequestReviews` (threads, viewed state, submitting a
-  review) with the neutral `ReviewAnchor`
+  `FeedSource` and `FeedHydrator` for activity, `ThreadSource` with the
+  conversation model in `Thread.kt` (`ThreadDetail`, typed `TimelineItem`s,
+  `ReviewThread`, and open enums that serialize as their raw value), and
+  `PullRequestReviews` (threads, viewed state, submitting a review) with the
+  neutral `ReviewAnchor`
 - `forge/github`: the GitHub adapter: notifications REST (unread only; see
   `docs/design.md`), inbox hydration (`GitHubHydrator`, which batches
   `InboxHydration.graphql` under aliases), error mapping (`GitHubErrors.kt`:
@@ -58,8 +59,9 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   screen's store (`PullRequestChangesRepository`: viewed files keyed by path and
   blob, the pending review's drafts, review threads; tables prefixed
   `changes_`), accounts and per-account forge clients, settings in DataStore,
-  and `TokenStore` implementations (Android Keystore; desktop OS keychain with a
-  private-file fallback)
+  and `FeedSync` and `FeedRepository` (conditional activity polling, hydration,
+  local mutes and burst aggregation), and `TokenStore` implementations (Android
+  Keystore; desktop OS keychain with a private-file fallback)
 - `core/ui`: the design system: `TongsTheme` (Material 3 Expressive), density
   per platform, `TongsIcons` (Material Symbols), `ListRow`, `SwipeActionsBox`,
   `stateColors()` (open, merged, closed, and checks, harmonized with the theme),
@@ -81,7 +83,7 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   `FileTreePane`, inline cards, the review pane, and `CommentComposer`, the seam
   for another composer; `PullRequestLoad` fetches a PR in the background, and
   `PullRequestReview` is the spikes' bare view), `auth` (sign-in), `settings`,
-  and `feed` (Activity, placeholder)
+  and `feed` (Activity, with burst aggregation, grouping, and local mutes)
 - `codeview`: Compose Multiplatform canvas renderer for code and diffs, with
   file headers (collapse, counts, viewed box), gutter line selection, and
   overlays for annotation rows through a `CodeViewDelegate`
@@ -89,8 +91,8 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   the navigation shell and list-detail scenes
 - `build-logic`: convention plugins: `tongs.kmp.library` (JVM and Android
   targets, namespace from the module path) and `tongs.compose`
-- `desktopApp`: desktop shell; runs the app, and keeps the spike modes behind
-  flags
+- `desktopApp`: Nucleus/Tao desktop shell (native Wayland); runs the app, and
+  keeps AWT spike modes and offscreen screenshot modes behind flags
 - `androidApp`: Android shell; `MainActivity` runs the app
   (`--es thread owner/repo#N` opens a thread, `--es open owner/repo#N` a PR's
   changes), and `PullRequestActivity` keeps the account-free PR spike
@@ -114,9 +116,9 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
 - `prepare_languages` example: time extracting, loading, and compiling queries
   for every language on a device; its doc comment has the cargo-ndk and adb
   steps
-- `./gradlew :desktopApp:run`: run the app (builds the JNI library first). Its
-  data goes in `$XDG_DATA_HOME/tongs`; set `XDG_DATA_HOME` to sign in as someone
-  else. Sign-in offers `gh`'s token on desktop
+- `./gradlew :desktopApp:run`: run the Nucleus window (builds the JNI library
+  first). Its data goes in `$XDG_DATA_HOME/tongs`; set `XDG_DATA_HOME` to sign
+  in as someone else. Sign-in offers `gh`'s token on desktop
 - `./gradlew :desktopApp:run --args="--app-screenshots=<dir>"`: render the
   inbox, an open thread, settings, and a PR's changes offscreen with the
   signed-in account's real data (signs in with `gh`'s token if there's no
@@ -148,6 +150,12 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   screenshots in `feature/inbox/src/jvmTest/snapshots` (rows, views, filters,
   grouping, snoozed, read elsewhere with its bulk action, and each sync problem,
   from made-up data); `recordRoborazziJvm` updates them
+- `./gradlew :feature:feed:verifyRoborazziJvm`: compare activity at folded (360
+  dp), unfolded (700 dp), and desktop widths, grouped views, a push burst, and
+  sync states; `recordRoborazziJvm` updates the made-up-data screenshots
+- `TONGS_LIVE_TESTS=1 GH_TOKEN=$(gh auth token) ./gradlew :forge:github:jvmTest --tests '*LiveFeed*' -i`:
+  measure feed polls and hydration read-only, printing REST requests and GraphQL
+  points; `TONGS_FEED_WAIT=65` adds a poll after the requested interval
 - `TONGS_LIVE_TESTS=1 GH_TOKEN=$(gh auth token) ./gradlew :forge:github:jvmTest --tests '*LiveInbox*' -i`:
   poll and hydrate your real inbox, read-only, and print each row and the
   GraphQL points it cost

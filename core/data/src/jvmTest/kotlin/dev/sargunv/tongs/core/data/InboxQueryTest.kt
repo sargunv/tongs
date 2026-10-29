@@ -89,6 +89,17 @@ class InboxQueryTest {
   }
 
   @Test
+  fun snoozedPicksTheListAndNegatedKeepsTheInbox() {
+    // `is:snoozed` lists the snoozed threads, and `-is:snoozed` the inbox, which already leaves
+    // them out; the rows come from the list the query picks.
+    assertEquals(listOf("1", "2", "3", "4", "5"), ids("-is:snoozed"))
+    assertEquals(listOf("1", "3", "4"), ids("-is:snoozed is:unread"))
+    assertEquals(listOf("1", "2", "3", "4", "5"), ids("is:snoozed"))
+    assertEquals(emptyList(), ids("is:snoozed -is:snoozed"))
+    assertEquals(false, InboxQuery.parse("-is:snoozed").wantsSnoozed)
+  }
+
+  @Test
   fun togglesTerms() {
     val query = InboxQuery.parse("is:unread repo:\"a/b\"")
     assertEquals(listOf("is:unread", "repo:\"a/b\""), InboxQuery.tokenize(query.text))

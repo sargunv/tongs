@@ -63,6 +63,8 @@ class InboxRepository(
   private val inFlight = Mutex()
   /** Threads with a forge call running in this process. */
   private val scheduled = mutableSetOf<ThreadKey>()
+  /** Threads whose sends came while their call ran, so the call checks again once it's done. */
+  private val again = mutableSetOf<ThreadKey>()
   /** Threads marked done in this process whose undo window is still open. */
   private val held = mutableSetOf<ThreadKey>()
 
@@ -174,29 +176,51 @@ class InboxRepository(
   suspend fun unsnooze(key: ThreadKey) =
     dao.restoreSnooze(key.accountId, key.threadId, null, localUnread = true)
 
-  /** Sends what's pending for [key]: a done, or else a read. Confirms it, or undoes it. */
+  /**
+   * Sends what's pending for [key]: a done, or else a read. Confirms it, or undoes it. One call at
+   * a time per thread: a send that comes while one runs, as a done after a read still on its way,
+   * goes once that one is through.
+   */
   private suspend fun send(key: ThreadKey) {
-    inFlight.withLock { if (!scheduled.add(key)) return }
-    try {
-      val thread = dao.thread(key.accountId, key.threadId) ?: return
-      val done = thread.pendingDone
-      if (!done && !thread.pendingRead) return
-      try {
-        val inbox = clients.client(key.accountId)?.inbox ?: error("account is signed out")
-        if (done) inbox.markDone(key.threadId) else inbox.markRead(key.threadId)
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: Exception) {
-        if (done) dao.setPendingDone(key.accountId, key.threadId, false)
-        else dao.revertRead(key.accountId, key.threadId)
-        _failures.tryEmit("Couldn't mark as ${if (done) "done" else "read"}: ${e.message}")
+    inFlight.withLock {
+      if (!scheduled.add(key)) {
+        again += key
         return
       }
-      if (done) dao.delete(key.accountId, listOf(key.threadId))
-      else dao.confirmRead(key.accountId, key.threadId)
-    } finally {
-      withContext(NonCancellable) { inFlight.withLock { scheduled.remove(key) } }
     }
+    try {
+      do {
+        sendOnce(key)
+        val more = inFlight.withLock { again.remove(key).also { if (!it) scheduled.remove(key) } }
+      } while (more)
+    } catch (e: Throwable) {
+      withContext(NonCancellable) {
+        inFlight.withLock {
+          scheduled.remove(key)
+          again.remove(key)
+        }
+      }
+      throw e
+    }
+  }
+
+  private suspend fun sendOnce(key: ThreadKey) {
+    val thread = dao.thread(key.accountId, key.threadId) ?: return
+    val done = thread.pendingDone && inFlight.withLock { key !in held }
+    if (!done && !thread.pendingRead) return
+    try {
+      val inbox = clients.client(key.accountId)?.inbox ?: error("account is signed out")
+      if (done) inbox.markDone(key.threadId) else inbox.markRead(key.threadId)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      if (done) dao.setPendingDone(key.accountId, key.threadId, false)
+      else dao.revertRead(key.accountId, key.threadId)
+      _failures.tryEmit("Couldn't mark as ${if (done) "done" else "read"}: ${e.message}")
+      return
+    }
+    if (done) dao.delete(key.accountId, listOf(key.threadId))
+    else dao.confirmRead(key.accountId, key.threadId)
   }
 
   /** Sends reads and dones left pending by an earlier run of the app. */

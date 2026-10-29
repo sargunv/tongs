@@ -3,8 +3,10 @@ package dev.sargunv.tongs.core.data
 import androidx.room3.AutoMigration
 import androidx.room3.ConstructedBy
 import androidx.room3.Database
+import androidx.room3.DeleteColumn
 import androidx.room3.RoomDatabase
 import androidx.room3.RoomDatabaseConstructor
+import androidx.room3.migration.AutoMigrationSpec
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -32,12 +34,13 @@ import kotlinx.coroutines.IO
       ChangesThreadEntity::class,
       ChangesThreadCommentEntity::class,
     ],
-  version = 4,
+  version = 5,
   autoMigrations =
     [
       AutoMigration(from = 1, to = 2),
       AutoMigration(from = 2, to = 3),
       AutoMigration(from = 3, to = 4),
+      AutoMigration(from = 4, to = 5, spec = DropKept::class),
     ],
 )
 @ConstructedBy(TongsDatabaseConstructor::class)
@@ -54,6 +57,13 @@ abstract class TongsDatabase : RoomDatabase() {
 
   abstract fun pullRequestChanges(): PullRequestChangesDao
 }
+
+/**
+ * Version 5 keeps every thread until it's done here, so `kept` (triaged here) has nothing left to
+ * say; `readElsewhere` is new and starts false, since threads that went read elsewhere were
+ * dropped.
+ */
+@DeleteColumn(tableName = "inbox_thread", columnName = "kept") class DropKept : AutoMigrationSpec
 
 // Room generates the actual objects.
 @Suppress("KotlinNoActualForExpect")

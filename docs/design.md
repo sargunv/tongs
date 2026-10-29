@@ -440,7 +440,9 @@ express that, so its adapter will have to narrow such a range.
   and done meaning exactly what the API means. No reclassifying into our own
   buckets: `reason` says why you're subscribed, and it's sticky. Of 50 recent
   notifications on the owner's account, 37 had reason `author`, whatever
-  actually happened (a push, CI, a merge).
+  actually happened (a push, CI, a merge). The one exception GitHub forces: it
+  can't report done, so a thread done elsewhere stays here, marked read
+  elsewhere, until it's done here (see "How sync works, as built").
 - **What's new is added, not inferred.** Each row shows GitHub's reason, plus a
   second line saying what happened since `last_read_at` ("2 new commits",
   "checks failed", "new comment from …"). That comes from hydration: GraphQL
@@ -462,15 +464,29 @@ express that, so its adapter will have to narrow such a range.
 - **How sync works, as built.**
   - **GitHub can't list what's still in the inbox once it's read.** With
     `all=true`, the notifications API also returns threads marked done, on the
-    web or with `DELETE /notifications/threads/{id}`, as plain read threads;
-    nothing tells them apart (measured on 2026-10-28: a thread marked done was
-    still listed minutes later, and the owner's `all=true` list held 150 read
-    threads while their web inbox was at zero). Only unread is certain: new
-    activity brings a done thread back unread. So polls ask for unread threads
-    only, and the inbox is those plus the threads triaged in Tongs (read, marked
-    unread, or snoozed here), which stay until they're done here. A thread that
-    stops being unread without being triaged here was read or done elsewhere,
-    and goes.
+    web or with `DELETE /notifications/threads/{id}`, as plain read threads
+    (`unread: false`); nothing tells them apart (measured on 2026-10-28: a
+    thread marked done was still listed minutes later, and the owner's
+    `all=true` list held 150 read threads while their web inbox was at zero). A
+    single thread's GET has no done field either, and GraphQL's
+    `notificationThreads`, which GitHub's own apps use, isn't public ("Field
+    'notificationThreads' doesn't exist on type 'User'"). Reported, unanswered:
+    [community discussion 152852](https://github.com/orgs/community/discussions/152852).
+    Only unread is certain: new activity brings a done thread back unread. So
+    polls ask for unread threads only.
+  - **So Tongs keeps its own inbox.** A thread joins when GitHub reports it
+    unread, and leaves only when it's marked done in Tongs. One that stops being
+    unread without Tongs reading it stays, read, and is marked **read
+    elsewhere**: GitHub can't say whether it was read or done there, and
+    dropping it would also drop threads that were only read, which are still in
+    the GitHub inbox. New activity (unread again) clears the mark, and so does
+    reading or opening it here. "Mark done: read elsewhere" in the overflow menu
+    clears them from the current view at once, with the bulk undo window;
+    sending done for a thread already done on GitHub is harmless.
+    `is:read-elsewhere` filters to them. The rule is in `InboxSync.merge`.
+  - **The first sign-in starts from unread threads only.** Older threads that
+    are read but not done on GitHub can't be told from done ones, so they're
+    never listed; the inbox grows from there.
   - With `If-Modified-Since`, a changed inbox answers with only the threads
     updated since, as if `since` were set, not the whole first page. Such a poll
     covers only what it lists. The first poll of a session, one every 15
@@ -483,8 +499,8 @@ express that, so its adapter will have to narrow such a range.
     (sync waits for the reset), SAML SSO required (with the authorization link).
     A poll that succeeds but that GitHub filtered for SSO
     (`X-GitHub-SSO: partial-results`) names the organizations, and their threads
-    aren't treated as gone. Otherwise an account waits at least two minutes
-    after an error.
+    aren't treated as read elsewhere. Otherwise an account waits at least two
+    minutes after an error.
   - Done waits five seconds before `DELETE` (eleven for "mark all as done"),
     since GitHub has no way to bring a thread back; undo inside the window
     cancels it. Reads go at once. A done or read the app didn't get to send,
@@ -526,15 +542,20 @@ express that, so its adapter will have to narrow such a range.
     primary color when it asks something of you), and what's new. The icon's
     color is the subject's state (open green, merged purple, closed red, draft
     gray; issues closed as completed purple, not planned gray). An open PR's
-    checks and review decision follow as small marks. `InboxRow.draft` is the
-    seam for reply drafts, always null until the thread feature stores them.
+    checks and review decision follow as small marks. A thread read or done
+    elsewhere ends its reason line with "Read elsewhere", in the line's muted
+    color, so it wraps rather than crowding the repo on a phone.
+    `InboxRow.draft` is the seam for reply drafts, always null until the thread
+    feature stores them.
   - Filters use GitHub's vocabulary (`reason:`, `is:pr`, `is:issue`,
     `is:unread`, `repo:`, `org:`), plus `is:open`, `is:merged`, `is:closed`, and
-    `is:draft` from GitHub's search, and `is:snoozed`. Terms of one kind are
-    alternatives, a leading `-` negates, and anything else matches the title.
-    Saved views are named filters, local in Room, and each can group by repo;
-    the default view is one chronological list.
-  - "Mark all as done" acts on the current view.
+    `is:draft` from GitHub's search, and Tongs' own `is:snoozed` and
+    `is:read-elsewhere`. Terms of one kind are alternatives, a leading `-`
+    negates, and anything else matches the title. Saved views are named filters,
+    local in Room, and each can group by repo; the default view is one
+    chronological list.
+  - "Mark all as done" acts on the current view, and so does "Mark done: read
+    elsewhere", which marks done only its rows read or done elsewhere.
   - Desktop: hover actions over the row's end, and `j`/`k`, Enter or `o`, `e`,
     `s`, Shift+U, Shift+I, `z` (undo), `/` (filter), `r`, Esc, and `?`. Snooze
     presets show their times and take number keys.

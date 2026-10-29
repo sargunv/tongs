@@ -34,7 +34,8 @@ import kotlin.time.Instant
 /**
  * One notification: the repo and when, the title, then GitHub's reason and what's new since you
  * last read it. The icon's color is the subject's state, and an open PR's checks and review
- * decision follow the reason line as small marks.
+ * decision follow the reason line as small marks. A thread read or done elsewhere says so at the
+ * end of the reason line.
  */
 @Composable
 internal fun InboxRowItem(
@@ -88,6 +89,9 @@ internal fun InboxRowItem(
   )
 }
 
+/** The mark on rows that GitHub stopped listing as unread without Tongs reading them. */
+internal const val READ_ELSEWHERE = "Read elsewhere"
+
 @Composable
 private fun SupportingLine(row: InboxRow, colors: StateColors) {
   val content = LocalContentColor.current
@@ -102,6 +106,12 @@ private fun SupportingLine(row: InboxRow, colors: StateColors) {
         whatsNewAfterReason(row)?.let {
           append(" · ")
           append(it)
+        }
+        // Quiet, in the line's own color: GitHub can't say whether it was read or done there, so
+        // the row stays until it's done here. Last, so it wraps rather than crowding the repo.
+        if (row.readElsewhere) {
+          append(" · ")
+          append(READ_ELSEWHERE)
         }
       },
       // What's new is the point of the line; give it a second line before cutting it off.

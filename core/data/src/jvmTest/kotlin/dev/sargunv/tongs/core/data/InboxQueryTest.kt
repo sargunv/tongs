@@ -15,6 +15,7 @@ class InboxQueryTest {
     state: String? = "OPEN",
     draft: Boolean = false,
     title: String = "Thread $id",
+    readElsewhere: Boolean = false,
   ) =
     InboxRow(
       accountId = 1,
@@ -37,6 +38,7 @@ class InboxQueryTest {
       checks = null,
       reviewDecision = null,
       snoozedUntil = null,
+      readElsewhere = readElsewhere,
     )
 
   private val rows =
@@ -45,7 +47,7 @@ class InboxQueryTest {
       row("2", reason = "mention", type = "Issue", unread = false, state = "CLOSED"),
       row("3", reason = "team_mention", owner = "maplibre", repo = "martin", state = "MERGED"),
       row("4", draft = true, title = "Draw wide characters"),
-      row("5", type = "Release", state = null, unread = false),
+      row("5", type = "Release", state = null, unread = false, readElsewhere = true),
     )
 
   private fun ids(query: String) = rows.filter(InboxQuery.parse(query)::matches).map { it.id }
@@ -60,6 +62,8 @@ class InboxQueryTest {
     assertEquals(listOf("2"), ids("is:issue"))
     assertEquals(listOf("1", "2", "3", "4"), ids("is:issue-or-pull-request"))
     assertEquals(listOf("1", "3", "4"), ids("is:unread"))
+    assertEquals(listOf("5"), ids("is:read-elsewhere"))
+    assertEquals(listOf("2"), ids("is:read -is:read-elsewhere"))
     assertEquals(listOf("3"), ids("repo:maplibre/martin"))
     assertEquals(listOf("3"), ids("org:MapLibre"))
     assertEquals(listOf("3"), ids("is:merged"))

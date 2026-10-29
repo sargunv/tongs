@@ -89,7 +89,7 @@ class InboxSyncTest {
   }
 
   @Test
-  fun deletesThreadsDoneElsewhere() = dbTest { db ->
+  fun keepsThreadsNoLongerUnreadAsReadElsewhere() = dbTest { db ->
     val dao = db.inbox()
     val (account, clients) = signIn(db, inbox)
     val sync = InboxSync(db, clients, virtualClock())
@@ -101,16 +101,82 @@ class InboxSyncTest {
       )
     sync.poll(account)
 
-    // A partial poll covers threads at least as new as its oldest: 2 is gone, and 3 isn't covered.
+    // A partial poll covers threads at least as new as its oldest: 2 was read or done elsewhere,
+    // and 3 isn't covered.
     inbox.polls +=
       changed(thread("1", START - 1.hours), thread("4", START - 150.minutes), complete = false)
     sync.poll(account)
-    assertEquals(setOf("1", "3", "4"), dao.threads(account).map { it.id }.toSet())
+    assertEquals(setOf("1", "2", "3", "4"), dao.threads(account).map { it.id }.toSet())
+    assertEquals(setOf("2"), readElsewhere(db, account))
 
-    // A complete poll covers everything.
+    // A complete poll covers everything, and still nothing leaves.
     inbox.polls += changed(thread("1", START))
     sync.poll(account)
-    assertEquals(listOf("1"), dao.threads(account).map { it.id })
+    assertEquals(setOf("1", "2", "3", "4"), dao.threads(account).map { it.id }.toSet())
+    assertEquals(setOf("2", "3", "4"), readElsewhere(db, account))
+    assertEquals(listOf("1"), dao.threads(account).filter { it.unread }.map { it.id })
+  }
+
+  @Test
+  fun newActivityClearsReadElsewhere() = dbTest { db ->
+    val (account, clients) = signIn(db, inbox)
+    val sync = InboxSync(db, clients, virtualClock())
+    inbox.polls += changed(thread("1", START - 1.hours))
+    sync.poll(account)
+    inbox.polls += changed(cursor = "c2")
+    sync.refresh()
+    assertEquals(setOf("1"), readElsewhere(db, account))
+
+    // Unread again: new activity, so it's back in the inbox as unread, without the mark.
+    inbox.polls += changed(thread("1", START), cursor = "c3")
+    sync.refresh()
+    val row = InboxRepository(db, clients, backgroundScope, virtualClock()).inbox().first().single()
+    assertEquals(true, row.isUnread)
+    assertEquals(false, row.readElsewhere)
+    assertEquals(false, db.inbox().thread(account, "1")!!.readElsewhere)
+  }
+
+  @Test
+  fun readingHereClearsReadElsewhere() = dbTest { db ->
+    val (account, clients) = signIn(db, inbox)
+    val sync = InboxSync(db, clients, virtualClock())
+    val repository = InboxRepository(db, clients, backgroundScope, virtualClock())
+    inbox.polls += changed(thread("1", START - 1.hours), thread("2", START - 2.hours))
+    sync.poll(account)
+    inbox.polls += changed(cursor = "c2")
+    sync.refresh()
+    assertEquals(setOf("1", "2"), readElsewhere(db, account))
+
+    // Opening a row read elsewhere clears its mark locally: the forge already has it read.
+    repository.acknowledgeReadElsewhere(ThreadKey(account, "1"))
+    // Marking read here clears it too.
+    repository.markRead(ThreadKey(account, "2"))
+    runCurrent()
+    assertEquals(emptySet(), readElsewhere(db, account))
+    assertEquals(listOf("read 2"), inbox.calls)
+    assertEquals(listOf("1", "2"), repository.inbox().first().map { it.id })
+  }
+
+  @Test
+  fun aThreadLeavesOnlyWhenDoneHere() = dbTest { db ->
+    val dao = db.inbox()
+    val (account, clients) = signIn(db, inbox)
+    val sync = InboxSync(db, clients, virtualClock())
+    val repository = InboxRepository(db, clients, backgroundScope, virtualClock())
+    inbox.polls += changed(thread("1", START - 1.hours), thread("2", START - 2.hours))
+    sync.poll(account)
+    inbox.polls += changed(cursor = "c2")
+    sync.refresh()
+    assertEquals(setOf("1", "2"), dao.threads(account).map { it.id }.toSet())
+
+    repository.markDone(listOf(ThreadKey(account, "1")))
+    advanceTimeBy(repository.undoWindow + 1.seconds)
+    runCurrent()
+    assertEquals(listOf("done 1"), inbox.calls)
+    // Polls that don't list it keep it gone, and the rest stay.
+    inbox.polls += changed(cursor = "c3")
+    sync.refresh()
+    assertEquals(listOf("2"), dao.threads(account).map { it.id })
   }
 
   @Test
@@ -152,7 +218,7 @@ class InboxSyncTest {
   }
 
   @Test
-  fun keepsThreadsTriagedHereOnceTheyreNoLongerUnread() = dbTest { db ->
+  fun marksOnlyThreadsReadElsewhere() = dbTest { db ->
     val dao = db.inbox()
     val (account, clients) = signIn(db, inbox)
     val sync = InboxSync(db, clients, virtualClock())
@@ -172,7 +238,18 @@ class InboxSyncTest {
     // GitHub lists only unread threads, and none are unread now.
     inbox.polls += changed()
     sync.refresh()
-    assertEquals(setOf("1", "2"), dao.threads(account).map { it.id }.toSet())
+    assertEquals(setOf("1", "2", "3"), dao.threads(account).map { it.id }.toSet())
     assertEquals(false, dao.thread(account, "2")!!.unread)
+    // Only 3 says so; 1 was read here, and 2 shows unread when it's back.
+    val rows = repository.inbox().first().associateBy { it.id }
+    assertEquals(false, rows.getValue("1").readElsewhere)
+    assertEquals(true, rows.getValue("3").readElsewhere)
+    advanceTimeBy(2.hours)
+    val back = repository.inbox().first().single { it.id == "2" }
+    assertEquals(true, back.isUnread)
+    assertEquals(false, back.readElsewhere)
   }
+
+  private suspend fun readElsewhere(db: TongsDatabase, account: Long) =
+    db.inbox().threads(account).filter { it.readElsewhere }.map { it.id }.toSet()
 }

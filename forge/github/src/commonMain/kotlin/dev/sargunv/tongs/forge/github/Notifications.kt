@@ -41,9 +41,11 @@ import kotlinx.serialization.json.Json
  *
  * Not `all=true`: GitHub's list of read threads includes the ones marked done, on the web or with
  * [markDone], and nothing in it tells them apart, so it can't say what's still in the inbox once
- * it's read. Only unread is certain: a thread with new activity comes back unread. With a cursor, a
- * changed inbox answers with only the threads updated since the cursor, as if `since` were set, so
- * such a poll is never complete.
+ * it's read. Only unread is certain: a thread with new activity comes back unread. Nothing else
+ * reports done either (see https://github.com/orgs/community/discussions/152852), so the inbox
+ * keeps every thread until it's done in Tongs; `InboxSync.merge` explains. With a cursor, a changed
+ * inbox answers with only the threads updated since the cursor, as if `since` were set, so such a
+ * poll is never complete.
  */
 class GitHubNotifications(
   private val http: HttpClient,

@@ -58,7 +58,7 @@ fun main(args: Array<String>) {
           apiUrl = flag("api-url"),
           mutate = "--mutate" in args,
         )
-      else -> runApp(open = flag("open"))
+      else -> runApp(args, open = flag("open"))
     }
     return
   }

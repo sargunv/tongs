@@ -14,30 +14,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.materialkolor.PaletteStyle
-import com.materialkolor.dynamiccolor.ColorSpec
-import com.materialkolor.rememberDynamicColorScheme
 
-/**
- * Ember orange: tongs live by a forge. Seeds the scheme where the platform has no dynamic color.
- */
-val TongsSeedColor = Color(0xFFC2562B)
+/** A quiet blue for platforms without wallpaper colors or a system accent. */
+val TongsSeedColor = Color(0xFF426DA9)
 
 /**
  * Material 3 Expressive, the same on Android and desktop: one UI tree, with the platform setting
  * only color and density. Android uses the wallpaper's dynamic colors; desktop derives a scheme
- * from [TongsSeedColor]. Desktop is denser, since it has a pointer and a keyboard.
+ * from the OS accent, falling back to [TongsSeedColor]. Desktop is denser, since it has a pointer
+ * and a keyboard.
  */
 @Composable
 fun TongsTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-  val colorScheme =
-    platformColorScheme(darkTheme)
-      ?: rememberDynamicColorScheme(
-        seedColor = TongsSeedColor,
-        isDark = darkTheme,
-        style = PaletteStyle.TonalSpot,
-        specVersion = ColorSpec.SpecVersion.SPEC_2025,
-      )
+  val colorScheme = platformColorScheme(darkTheme)
   val density = if (isDesktop) TongsDensity.Dense else TongsDensity.Comfortable
   CompositionLocalProvider(
     LocalTongsDensity provides density,
@@ -62,8 +51,8 @@ private val DesktopTypography =
     )
   }
 
-/** The platform's own color scheme, such as Android's dynamic color, if it has one. */
-@Composable internal expect fun platformColorScheme(darkTheme: Boolean): ColorScheme?
+/** Wallpaper colors on Android; the OS accent or fallback blue on desktop. */
+@Composable internal expect fun platformColorScheme(darkTheme: Boolean): ColorScheme
 
 /** True on desktop: a pointer, a keyboard, and room for denser layouts. */
 expect val isDesktop: Boolean

@@ -71,8 +71,8 @@ data class NavigationItem(
 
 /**
  * The app's frame: a bottom bar on narrow windows (a folded phone), and a rail beside the content
- * on wider ones (unfolded, tablets, desktop). [showNavigation] false hides the bottom bar, for
- * full-screen detail screens on a phone; the rail stays, since it costs little width.
+ * on wider ones (unfolded, tablets, desktop). [showNavigation] false hides both layouts, including
+ * while signed out. The caller keeps navigation visible beside detail screens on wide windows.
  */
 @Composable
 fun TongsNavigationSuite(
@@ -84,9 +84,9 @@ fun TongsNavigationSuite(
   val compact = isCompactWidth()
   val type =
     when {
+      !showNavigation -> NavigationSuiteType.None
       !compact -> NavigationSuiteType.WideNavigationRailCollapsed
-      showNavigation -> NavigationSuiteType.ShortNavigationBarCompact
-      else -> NavigationSuiteType.None
+      else -> NavigationSuiteType.ShortNavigationBarCompact
     }
   NavigationSuiteScaffold(
     navigationSuiteType = type,

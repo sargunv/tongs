@@ -5,6 +5,11 @@ plugins {
 
 kotlin {
   sourceSets {
+    jvmTest.dependencies {
+      implementation(compose.desktop.currentOs)
+      implementation(libs.compose.ui.test)
+    }
+    jvmMain.dependencies { implementation(libs.nucleus.systemColor) }
     commonMain.dependencies {
       api(libs.compose.material3)
       api(libs.compose.material3.adaptive)

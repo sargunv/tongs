@@ -4,10 +4,13 @@ import dev.sargunv.tongs.core.data.TimelineEntry
 import dev.sargunv.tongs.forge.api.Actor
 import dev.sargunv.tongs.forge.api.EventKind
 import dev.sargunv.tongs.forge.api.Label
+import dev.sargunv.tongs.forge.api.ReviewState
 import dev.sargunv.tongs.forge.api.TimelineItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 
@@ -68,5 +71,23 @@ class TimelineRowsTest {
       rows(commit("a"), event("x", EventKind.Reopened, t), commit("b"), gapIndex = 1, hidden = 12)
     assertIs<TimelineRow.Gap>(rows[1])
     assertEquals(12, (rows[1] as TimelineRow.Gap).count)
+  }
+
+  @Test
+  fun onlyEmptyCommentReviewsAreReplies() {
+    fun review(id: String, state: ReviewState) = TimelineItem.Review(id, t, mona, state, body = "")
+    val rows =
+      rows(
+          review("approved", ReviewState.Approved),
+          review("changes", ReviewState.ChangesRequested),
+          review("dismissed", ReviewState.Dismissed),
+          review("replied", ReviewState.Commented),
+        )
+        .filterIsInstance<TimelineRow.Review>()
+        .associateBy { it.key }
+    assertFalse(rows.getValue("approved").isReplyOnly)
+    assertFalse(rows.getValue("changes").isReplyOnly)
+    assertFalse(rows.getValue("dismissed").isReplyOnly)
+    assertTrue(rows.getValue("replied").isReplyOnly)
   }
 }

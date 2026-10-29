@@ -3,6 +3,7 @@ package dev.sargunv.tongs.feature.thread
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.sargunv.tongs.core.composer.Composer
 import dev.sargunv.tongs.core.composer.ComposerAction
@@ -14,6 +15,7 @@ import dev.sargunv.tongs.core.ui.TongsIcons
 import dev.sargunv.tongs.forge.api.ThreadDetail
 import dev.sargunv.tongs.forge.api.ThreadKind
 import dev.sargunv.tongs.forge.api.ThreadState
+import kotlinx.coroutines.launch
 
 /** The composer replying to a thread, with Comment and Close or Reopen with comment. */
 @Composable
@@ -21,6 +23,7 @@ fun ReplyScreen(viewModel: ReplyViewModel, onClose: () -> Unit) {
   val snapshot by viewModel.snapshot.collectAsStateWithLifecycle()
   val webUrl by viewModel.webUrl.collectAsStateWithLifecycle()
   val state = rememberComposerState(viewModel.ref.replyDraft, viewModel.drafts)
+  val scope = rememberCoroutineScope()
   ReplyContent(
     state = state,
     detail = snapshot?.detail,
@@ -28,9 +31,11 @@ fun ReplyScreen(viewModel: ReplyViewModel, onClose: () -> Unit) {
     repo = viewModel.ref.repo.toString(),
     webUrl = webUrl,
     onSend = { body, close, reopen ->
-      state.markSent()
-      viewModel.send(body, close, reopen)
-      onClose()
+      scope.launch {
+        viewModel.send(body, close, reopen)
+        state.markSent()
+        onClose()
+      }
     },
     onClose = onClose,
   )

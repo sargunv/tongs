@@ -132,7 +132,7 @@ class ThreadRepository(
     val cursor = dao.thread(accountId, repo.owner, repo.name, number)?.gapCursor ?: return
     status.update { it.copy(loadingHidden = true) }
     try {
-      appendHidden(ref, source(ref).loadTimeline(repo, number, cursor))
+      appendHidden(ref, cursor, source(ref).loadTimeline(repo, number, cursor))
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
@@ -142,11 +142,13 @@ class ThreadRepository(
     }
   }
 
-  private suspend fun appendHidden(ref: ThreadRef, page: TimelinePage) {
+  /** Adds [page], fetched from [cursor], unless a refresh has moved the gap since. */
+  private suspend fun appendHidden(ref: ThreadRef, cursor: String, page: TimelinePage) {
     val (accountId, repo, number) = ref
     database.withWriteTransaction {
       val thread =
         dao.thread(accountId, repo.owner, repo.name, number) ?: return@withWriteTransaction
+      if (thread.gapCursor != cursor) return@withWriteTransaction
       val known = dao.items(accountId, repo.owner, repo.name, number).map { it.id }.toSet()
       // The page runs into the items from the end once the gap closes.
       val fresh = page.items.takeWhile { it.id !in known }
@@ -159,8 +161,9 @@ class ThreadRepository(
 
   /**
    * Posts [body] as a comment, showing it at once as pending. Then, if [close] or [reopen] is set,
-   * changes the thread's state. The reply draft is deleted once the forge has the comment, and kept
-   * if it refuses.
+   * changes the thread's state. [body] is saved as the [draft] first, so a refusal keeps exactly
+   * what was sent; once the forge has the comment, the draft is deleted unless it's been rewritten
+   * since.
    */
   suspend fun comment(
     ref: ThreadRef,
@@ -169,6 +172,7 @@ class ThreadRepository(
     reopen: Boolean = false,
     draft: DraftKey? = ref.replyDraft,
   ) {
+    draft?.let { drafts.save(it, body) }
     val thread = stored(ref) ?: return
     val account = accounts.account(ref.accountId)
     val localId = LOCAL_ID_PREFIX + Random.nextLong().toULong().toString(16)
@@ -193,7 +197,7 @@ class ThreadRepository(
         if (body.isNotBlank()) {
           val posted = source.addComment(thread.id, body)
           confirmComment(ref, localId, posted)
-          draft?.let { drafts.delete(it) }
+          draft?.let { drafts.deleteIfUnchanged(it, body) }
         }
         when {
           close != null -> setState(ref, thread, ThreadState.Closed, close)

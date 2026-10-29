@@ -10,8 +10,18 @@ import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes
 import org.intellij.markdown.parser.MarkdownParser
 
-/** Where Markdown is rendered, so references resolve: the instance and the thread's repo. */
-data class MarkdownContext(val webUrl: String, val repo: RepoRef?)
+/**
+ * Where Markdown is rendered, so references resolve: the instance and the thread's repo.
+ *
+ * @property suggestionBase for a review comment, the lines it's on as they are, so a
+ *
+ *   ```` ```suggestion ```` block can show as a diff against them; null where they aren't known.
+ */
+data class MarkdownContext(
+  val webUrl: String,
+  val repo: RepoRef?,
+  val suggestionBase: String? = null,
+)
 
 /**
  * Rewrites `#123`, `owner/repo#123`, `@user`, `@org/team`, and commit SHAs (7 to 40 hex digits,

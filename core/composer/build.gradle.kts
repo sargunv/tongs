@@ -5,6 +5,7 @@ plugins {
 
 kotlin {
   sourceSets {
+    jvmTest.dependencies { implementation(libs.sqlite.bundled) }
     commonMain.dependencies {
       api(project(":core:data"))
       implementation(project(":core:ui"))

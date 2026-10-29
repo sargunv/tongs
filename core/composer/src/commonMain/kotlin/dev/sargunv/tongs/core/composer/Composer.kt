@@ -3,12 +3,15 @@ package dev.sargunv.tongs.core.composer
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -51,6 +54,7 @@ import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.sargunv.tongs.core.data.DraftKey
@@ -184,6 +188,9 @@ data class ComposerAction(
  *
  * @param title what's being written, like "Reply to #412"; [subtitle] can name the repo.
  * @param context resolves `#123` and `@user` in the preview.
+ * @param subject what's being replied to, shown above the editor where it would be out of sight
+ *   otherwise, as the lines of a line comment in a full-screen composer. It gets at most a third of
+ *   the height and scrolls.
  */
 @Composable
 fun Composer(
@@ -196,6 +203,7 @@ fun Composer(
   subtitle: String? = null,
   placeholder: String = "Write a comment",
   autoFocus: Boolean = true,
+  subject: (@Composable () -> Unit)? = null,
 ) {
   val focus = remember { FocusRequester() }
   val currentActions by rememberUpdatedState(actions)
@@ -205,30 +213,39 @@ fun Composer(
     action.onClick(body)
   }
   Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier.fillMaxSize()) {
-    Column(
-      Modifier.windowInsetsPadding(WindowInsets.safeDrawing).onPreviewKeyEvent { event ->
-        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-        val command = event.isCtrlPressed || event.isMetaPressed
-        when {
-          event.key == Key.Escape -> onClose().let { true }
-          command && event.key == Key.Enter ->
-            currentActions.firstOrNull { it.primary }?.let(::run).let { true }
-          command && !state.preview -> format(state, event.key)
-          else -> false
+    BoxWithConstraints {
+      val third = maxHeight / 3
+      Column(
+        Modifier.windowInsetsPadding(WindowInsets.safeDrawing).onPreviewKeyEvent { event ->
+          if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+          val command = event.isCtrlPressed || event.isMetaPressed
+          when {
+            event.key == Key.Escape -> onClose().let { true }
+            command && event.key == Key.Enter ->
+              currentActions.firstOrNull { it.primary }?.let(::run).let { true }
+            command && !state.preview -> format(state, event.key)
+            else -> false
+          }
+        },
+      ) {
+        Header(state, title, subtitle, onClose)
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (subject != null) {
+          Box(Modifier.fillMaxWidth().heightIn(max = third).verticalScroll(rememberScrollState())) {
+            subject()
+          }
+          HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
-      },
-    ) {
-      Header(state, title, subtitle, onClose)
-      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-      Box(Modifier.weight(1f).fillMaxWidth()) {
-        if (state.preview) {
-          Preview(state, context)
-        } else {
-          Editor(state, placeholder, focus)
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+          if (state.preview) {
+            Preview(state, context)
+          } else {
+            Editor(state, placeholder, focus)
+          }
         }
+        if (!state.preview) FormattingBar(state)
+        ActionBar(state, actions, ::run)
       }
-      if (!state.preview) FormattingBar(state)
-      ActionBar(state, actions, ::run)
     }
   }
   LaunchedEffect(state.ready) {
@@ -287,7 +304,7 @@ private fun Editor(state: ComposerState, placeholder: String, focus: FocusReques
     enabled = state.ready,
     textStyle = style,
     cursorBrush = SolidColor(colors.primary),
-    modifier = Modifier.fillMaxSize().focusRequester(focus),
+    modifier = Modifier.fillMaxSize().focusRequester(focus).testTag("composer-body"),
     decorator = { field ->
       Box(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp)) {
         if (state.text.text.isEmpty()) {
@@ -390,12 +407,12 @@ private fun ActionBar(
   run: (ComposerAction) -> Unit,
 ) {
   val blank = state.isBlank
-  Row(
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
+  FlowRow(
+    itemVerticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
   ) {
-    Spacer(Modifier.weight(1f))
     for (action in actions.sortedBy { it.primary }) {
       val enabled = state.ready && action.enabled && (action.allowsEmpty || !blank)
       val content: @Composable () -> Unit = {

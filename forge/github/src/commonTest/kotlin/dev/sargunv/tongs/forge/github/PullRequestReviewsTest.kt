@@ -4,6 +4,7 @@ import dev.sargunv.tongs.engine.DiffSide
 import dev.sargunv.tongs.forge.api.DraftReviewComment
 import dev.sargunv.tongs.forge.api.FileViewedState
 import dev.sargunv.tongs.forge.api.Instance
+import dev.sargunv.tongs.forge.api.PendingReview
 import dev.sargunv.tongs.forge.api.RepoRef
 import dev.sargunv.tongs.forge.api.ReviewAnchor
 import dev.sargunv.tongs.forge.api.ReviewEvent
@@ -20,6 +21,7 @@ import io.ktor.http.headersOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -157,8 +159,10 @@ class PullRequestReviewsTest {
               "nodes": [{"id": "T1", "path": "a.kt", "diffSide": "LEFT", "startDiffSide": null,
                 "line": 3, "startLine": null, "originalLine": 3, "isResolved": true,
                 "isOutdated": false, "subjectType": "LINE",
-                "comments": {"nodes": [{"id": "C1", "body": "Why?",
-                  "createdAt": "2026-10-28T12:00:00Z",
+                "viewerCanReply": true, "viewerCanResolve": false, "viewerCanUnresolve": true,
+                "resolvedBy": {"login": "hubot"},
+                "comments": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [{"id": "C1", "body": "Why?",
+                  "createdAt": "2026-10-28T12:00:00Z", "state": "PENDING",
                   "author": {"__typename": "User", "login": "octocat", "avatarUrl": "https://a"}}]}}]
             }}}}}"""
         else ->
@@ -174,10 +178,149 @@ class PullRequestReviewsTest {
     assertEquals(DiffSide.Old, thread.side)
     assertEquals(3, thread.line)
     assertTrue(thread.isResolved)
+    assertEquals("hubot", thread.resolvedBy)
+    assertTrue(thread.viewerCanReply && thread.viewerCanUnresolve && !thread.viewerCanResolve)
     assertEquals("octocat", thread.comments.single().authorLogin)
+    assertTrue(thread.comments.single().pending)
     assertEquals(
       mapOf("a.kt" to FileViewedState.Viewed, "b.kt" to FileViewedState.Dismissed),
       reviews.viewedFiles(repo, 7),
     )
+  }
+
+  private fun graphql(i: Int) = Json.parseToJsonElement(requests[i].second).jsonObject
+
+  @Test
+  fun findsTheViewersPendingReview() = runTest {
+    val reviews = reviews { _, _ ->
+      HttpStatusCode.OK to
+        """{"data": {"repository": {"pullRequest": {"id": "PR_1", "title": "T", "state": "OPEN",
+          "url": "https://github.com/octo/hello/pull/7", "headRefOid": "abc",
+          "viewerDidAuthor": false, "author": null, "viewerLatestReviewRequest": null,
+          "reviews": {"nodes": [{"id": "R_1", "body": "Half done", "viewerDidAuthor": true,
+            "comments": {"totalCount": 2}}]}}}}}"""
+    }
+    assertEquals(PendingReview("R_1", "Half done", 2), reviews.overview(repo, 7).pendingReview)
+  }
+
+  @Test
+  fun repliesDirectlyOrIntoAPendingReview() = runTest {
+    val reviews = reviews { _, _ ->
+      HttpStatusCode.OK to
+        """{"data": {"addPullRequestReviewThreadReply": {"comment": {"id": "C9", "body": "Done",
+          "createdAt": "2026-10-28T12:00:00Z", "state": "SUBMITTED",
+          "author": {"__typename": "User", "login": "me", "avatarUrl": "https://a"}}}}}"""
+    }
+    val comment = reviews.reply("T1", "Done")
+    assertEquals("C9", comment.id)
+    assertFalse(comment.pending)
+    reviews.reply("T1", "Done", pendingReviewId = "R_1")
+    val direct = graphql(0).getValue("variables").jsonObject
+    assertEquals("ReplyToReviewThread", graphql(0).str("operationName"))
+    assertEquals("T1", direct.str("threadId"))
+    assertTrue("reviewId" !in direct)
+    assertEquals("R_1", graphql(1).getValue("variables").jsonObject.str("reviewId"))
+  }
+
+  @Test
+  fun resolvesAndUnresolves() = runTest {
+    val reviews = reviews { _, _ ->
+      HttpStatusCode.OK to
+        """{"data": {"resolveReviewThread": {"thread": {"id": "T1", "isResolved": true}},
+          "unresolveReviewThread": {"thread": {"id": "T1", "isResolved": false}}}}"""
+    }
+    reviews.setResolved("T1", true)
+    reviews.setResolved("T1", false)
+    assertEquals("ResolveReviewThread", graphql(0).str("operationName"))
+    assertEquals("UnresolveReviewThread", graphql(1).str("operationName"))
+  }
+
+  @Test
+  fun buildsUpAndSubmitsAPendingReview() = runTest {
+    val reviews = reviews { _, body ->
+      HttpStatusCode.OK to
+        when {
+          "StartPendingReview" in body ->
+            """{"data": {"addPullRequestReview": {"pullRequestReview": {"id": "R_2"}}}}"""
+          "AddPendingReviewThread" in body ->
+            """{"data": {"addPullRequestReviewThread": {"thread": {"id": "T2"}}}}"""
+          "SubmitPendingReview" in body ->
+            """{"data": {"submitPullRequestReview": {"pullRequestReview": {"id": "R_2"}}}}"""
+          else -> """{"data": {"deletePullRequestReview": {"pullRequestReview": {"id": "R_2"}}}}"""
+        }
+    }
+    val range = DraftReviewComment(ReviewAnchor("abc", "b.kt", DiffSide.Old, 4, 6), "Why?")
+    assertEquals("R_2", reviews.startPendingReview("PR_1", "abc", listOf(range)))
+    reviews.addToPendingReview("R_2", range)
+    reviews.submitPendingReview("R_2", ReviewEvent.RequestChanges, "")
+    reviews.deletePendingReview("R_2")
+    val start = graphql(0).getValue("variables").jsonObject
+    assertEquals("abc", start.str("commitOid"))
+    assertEquals(
+      Json.parseToJsonElement(
+        """[{"body": "Why?", "line": 6, "path": "b.kt", "side": "LEFT", "startLine": 4,
+          "startSide": "LEFT"}]""",
+      ),
+      start.getValue("threads"),
+    )
+    val add = graphql(1).getValue("variables").jsonObject
+    assertEquals("LEFT", add.str("side"))
+    assertEquals("4", add.str("startLine"))
+    val submit = graphql(2).getValue("variables").jsonObject
+    assertEquals("REQUEST_CHANGES", submit.str("event"))
+    assertEquals("", submit.str("body"))
+    assertEquals("DeletePendingReview", graphql(3).str("operationName"))
+  }
+
+  @Test
+  fun explicitlyClearsPendingSummaryWhenApprovingOrCommenting() = runTest {
+    val reviews = reviews { _, _ ->
+      HttpStatusCode.OK to
+        """{"data": {"submitPullRequestReview": {"pullRequestReview": {"id": "R_1"}}}}"""
+    }
+    for (event in listOf(ReviewEvent.Approve, ReviewEvent.Comment)) {
+      for (body in listOf("", " \n")) {
+        reviews.submitPendingReview("R_1", event, body)
+        val request = Json.parseToJsonElement(requests.last().second).jsonObject
+        assertEquals("SubmitPendingReview", request.str("operationName"))
+        val variables = request.getValue("variables").jsonObject
+        assertEquals("R_1", variables.str("reviewId"))
+        assertEquals(
+          if (event == ReviewEvent.Approve) "APPROVE" else "COMMENT",
+          variables.str("event"),
+        )
+        assertEquals(body, variables.str("body"))
+      }
+    }
+  }
+
+  @Test
+  fun loadsCommentsBeyondTheFirstPageOfAThread() = runTest {
+    val reviews = reviews { _, body ->
+      HttpStatusCode.OK to
+        if ("PullRequestReviewThreadComments" in body) {
+          """{"data":{"node":{"__typename":"PullRequestReviewThread","comments":{
+          "pageInfo":{"hasNextPage":false,"endCursor":null},
+          "nodes":[{"id":"C51","body":"Latest reply","createdAt":"2026-10-28T12:00:00Z",
+            "state":"SUBMITTED","author":null}]}}}}"""
+        } else {
+          """{"data":{"repository":{"pullRequest":{"reviewThreads":{
+          "pageInfo":{"hasNextPage":false,"endCursor":null},
+          "nodes":[{"id":"T1","path":"a.kt","diffSide":"RIGHT","startDiffSide":null,
+            "line":3,"startLine":null,"originalLine":3,"isResolved":false,"isOutdated":false,
+            "subjectType":"LINE","viewerCanReply":true,"viewerCanResolve":true,
+            "viewerCanUnresolve":false,"resolvedBy":null,"comments":{
+              "pageInfo":{"hasNextPage":true,"endCursor":"c50"},
+              "nodes":[{"id":"C1","body":"First","createdAt":"2026-10-28T12:00:00Z",
+                "state":"SUBMITTED","author":null}]}}]}}}}}"""
+        }
+    }
+    assertEquals(
+      listOf("First", "Latest reply"),
+      reviews.threads(repo, 7).single().comments.map { it.body },
+    )
+    val variables = graphql(1).getValue("variables").jsonObject
+    assertEquals("T1", variables.str("id"))
+    assertEquals("c50", variables.str("after"))
   }
 }

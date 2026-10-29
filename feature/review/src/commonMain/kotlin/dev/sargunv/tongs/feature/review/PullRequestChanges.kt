@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -58,6 +59,9 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation3.runtime.EntryProviderScope
 import androidx.navigation3.runtime.NavKey
+import androidx.navigationevent.NavigationEventInfo
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.compose.rememberNavigationEventState
 import dev.sargunv.tongs.codeview.CodeView
 import dev.sargunv.tongs.codeview.CodeViewColors
 import dev.sargunv.tongs.codeview.CodeViewDelegate
@@ -65,10 +69,13 @@ import dev.sargunv.tongs.codeview.FileHeaderInfo
 import dev.sargunv.tongs.codeview.LineSelection
 import dev.sargunv.tongs.codeview.codeRowHeight
 import dev.sargunv.tongs.core.data.AccountRepository
-import dev.sargunv.tongs.core.data.AppEnvironment
-import dev.sargunv.tongs.core.data.ForgeClients
+import dev.sargunv.tongs.core.data.DraftRepository
 import dev.sargunv.tongs.core.data.PullRequestChangesRepository
+import dev.sargunv.tongs.core.data.PullRequestDiffs
 import dev.sargunv.tongs.core.data.PullRequestKey
+import dev.sargunv.tongs.core.markdown.ForgeLink
+import dev.sargunv.tongs.core.markdown.MarkdownContext
+import dev.sargunv.tongs.core.markdown.ProvideForgeLinks
 import dev.sargunv.tongs.core.navigation.LocalNavigator
 import dev.sargunv.tongs.core.navigation.Route
 import dev.sargunv.tongs.core.navigation.RouteEntries
@@ -76,62 +83,54 @@ import dev.sargunv.tongs.core.navigation.route
 import dev.sargunv.tongs.core.ui.ActionIcon
 import dev.sargunv.tongs.core.ui.ReviewIcons
 import dev.sargunv.tongs.core.ui.TongsTopAppBar
-import dev.sargunv.tongs.engine.Highlighter
-import dev.sargunv.tongs.engine.NativeFetchSession
 import dev.sargunv.tongs.engine.ReviewSnapshot
 import dev.sargunv.tongs.forge.api.ReviewEvent
+import dev.sargunv.tongs.forge.api.SubjectType
+import dev.sargunv.tongs.forge.api.ThreadKind
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Assisted
 import dev.zacsweers.metro.AssistedFactory
 import dev.zacsweers.metro.AssistedInject
 import dev.zacsweers.metro.ContributesIntoSet
-import dev.zacsweers.metro.ContributesTo
 import dev.zacsweers.metro.Inject
-import dev.zacsweers.metro.Provides
-import dev.zacsweers.metro.SingleIn
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
- * Loads a PR's changes for the app, through the account's
- * [dev.sargunv.tongs.forge.api.ReviewSource], into the same per-repo object store the spike entry
- * points use, and keeps the screen's state in a [ChangesController]. The load starts when the
- * screen opens and stops when it's popped.
+ * Loads a PR's changes for the app through [PullRequestDiffs], and keeps the screen's state in a
+ * [ChangesController], which owns the snapshots for as long as the ViewModel lives. The load starts
+ * when the screen opens and stops when it's popped.
  */
 @AssistedInject
 class PullRequestChangesViewModel(
   @Assisted val route: Route.PullRequestChanges,
   accounts: AccountRepository,
-  clients: ForgeClients,
-  environment: AppEnvironment,
-  highlighter: Highlighter,
+  diffs: PullRequestDiffs,
   repository: PullRequestChangesRepository,
+  drafts: DraftRepository,
 ) : ViewModel() {
+  private val key = PullRequestKey(route.accountId, route.repo, route.number)
+
   val load =
     PullRequestLoad("${route.repo}#${route.number}", log = { println("review: $it") }) { onLoader ->
-      val account = accounts.account(route.accountId) ?: error("This account is signed out")
-      val reviews =
-        clients.client(route.accountId)?.reviews ?: error("This forge can't load reviews")
-      val store =
-        "${environment.cacheDir}/${account.instance.host}/${route.repo.owner}/${route.repo.name}/objects"
-      reviews.loadPullRequest(
-        route.repo,
-        route.number,
-        openSession = { NativeFetchSession.open(store, it, highlighter) },
-        onLoader = onLoader,
-      )
+      diffs.load(key, onLoader)
     }
 
-  val controller =
-    ChangesController(
-      viewModelScope,
-      load,
-      repository,
-      PullRequestKey(route.accountId, route.repo, route.number),
-    )
+  val controller = ChangesController(viewModelScope, load, repository, drafts, key)
+
+  /** The instance's web URL, which links in comments are relative to. */
+  var webUrl by mutableStateOf<String?>(null)
+    private set
 
   init {
     load.start(viewModelScope)
+    viewModelScope.launch {
+      accounts.account(route.accountId)?.instance?.webUrl?.let {
+        webUrl = it
+        controller.markdownContext = MarkdownContext(it, route.repo)
+      }
+    }
   }
 
   @AssistedFactory
@@ -150,10 +149,30 @@ private val SidePaneWidth = 1000.dp
  * first line comment, which creates a pending review. The file tree is a sheet when folded and a
  * pane beside the diff when unfolded or on desktop, where a third pane holds the review and the
  * PR's threads.
+ *
+ * The composer, for line comments and replies, covers the screen when folded. Unfolded it's a pane
+ * beside the diff, in the tree's place, and on desktop it takes the review pane, so the lines it's
+ * on stay in sight. A thread opens in a sheet when folded, beside the diff when unfolded, and in
+ * the review pane on desktop.
  */
 @Composable
-fun PullRequestChangesScreen(viewModel: PullRequestChangesViewModel, onBack: () -> Unit) {
+fun PullRequestChangesScreen(
+  viewModel: PullRequestChangesViewModel,
+  onBack: () -> Unit,
+  onOpenLink: (ForgeLink.Thread) -> Unit = {},
+) {
   val controller = viewModel.controller
+  ProvideForgeLinks(viewModel.webUrl ?: "https://github.com", onOpenLink) {
+    ChangesScreen(viewModel, controller, onBack)
+  }
+}
+
+@Composable
+private fun ChangesScreen(
+  viewModel: PullRequestChangesViewModel,
+  controller: ChangesController,
+  onBack: () -> Unit,
+) {
   val route = viewModel.route
   val snackbars = remember { SnackbarHostState() }
   LaunchedEffect(controller) { controller.messages.collect { snackbars.showSnackbar(it) } }
@@ -163,14 +182,20 @@ fun PullRequestChangesScreen(viewModel: PullRequestChangesViewModel, onBack: () 
   var showSide by rememberSaveable { mutableStateOf(true) }
   var finishing by remember { mutableStateOf<ReviewEvent?>(null) }
   var selectedThread by rememberSaveable { mutableStateOf<String?>(null) }
+  val composer = controller.composer
 
   BoxWithConstraints(Modifier.fillMaxSize()) {
     val width = maxWidth
     val wide = width >= TreePaneWidth
     val threePane = maxWidth >= SidePaneWidth
+    // The review pane shows itself for the composer.
+    val sidePane = threePane && (showSide || composer != null)
+    val thread = selectedThread?.let { id -> controller.threads.firstOrNull { it.thread.id == id } }
+    // Unfolded, the composer or a thread goes beside the diff, in the tree's place.
+    val extraPane = wide && !threePane && (composer != null || thread != null)
     val overview = controller.overview
     val canVerdict = overview?.viewerReviewRequested == true && !overview.viewerDidAuthor
-    val pending = controller.drafts.size
+    val pending = controller.pendingCount
     val bottomBar = !wide && (canVerdict || pending > 0)
     Scaffold(
       snackbarHost = { SnackbarHost(snackbars) },
@@ -190,7 +215,7 @@ fun PullRequestChangesScreen(viewModel: PullRequestChangesViewModel, onBack: () 
                 canVerdict = canVerdict,
                 pending = pending,
                 // The side pane has the review form.
-                offerReview = !threePane || !showSide,
+                offerReview = !sidePane,
                 onFinish = { finishing = it },
               )
               if (threePane) {
@@ -227,7 +252,7 @@ fun PullRequestChangesScreen(viewModel: PullRequestChangesViewModel, onBack: () 
       // Edge to edge; the bottom bar keeps clear of the navigation bar when it shows.
       val insets = if (bottomBar) Modifier else Modifier.navigationBarsPadding()
       Row(Modifier.padding(padding).fillMaxSize().then(insets).imePadding()) {
-        if (wide && showTree) {
+        if (wide && showTree && !extraPane) {
           FileTreePane(
             controller,
             treeState,
@@ -236,22 +261,40 @@ fun PullRequestChangesScreen(viewModel: PullRequestChangesViewModel, onBack: () 
           )
           VerticalDivider()
         }
-        DiffPane(
-          controller,
-          onOpenThread = {
-            selectedThread = it
-            if (threePane) showSide = true
-          },
-          modifier = Modifier.weight(1f).fillMaxHeight(),
-        )
-        if (threePane && showSide) {
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+          PendingReviewBanner(controller)
+          DiffPane(
+            controller,
+            onOpenThread = {
+              selectedThread = it
+              if (threePane) showSide = true
+            },
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+          )
+        }
+        if (sidePane) {
           VerticalDivider()
           ReviewSidePane(
             controller,
             selectedThread,
             onSelectThread = { selectedThread = it },
-            modifier = Modifier.width(340.dp).fillMaxHeight(),
+            modifier = Modifier.width(360.dp).fillMaxHeight(),
           )
+        }
+        if (extraPane) {
+          VerticalDivider()
+          val paneWidth = (width * 0.45f).coerceIn(300.dp, 400.dp)
+          val paneModifier = Modifier.width(paneWidth).fillMaxHeight()
+          if (composer != null) {
+            key(composer) {
+              LocalCommentComposer.current.Content(
+                controller.commentRequest(composer, quote = false),
+                paneModifier,
+              )
+            }
+          } else if (thread != null) {
+            ThreadPane(thread, controller, onClose = { selectedThread = null }, paneModifier)
+          }
         }
       }
     }
@@ -272,26 +315,27 @@ fun PullRequestChangesScreen(viewModel: PullRequestChangesViewModel, onBack: () 
         )
       }
     }
-    if (!threePane || !showSide) {
-      selectedThread
-        ?.let { id -> controller.threads.firstOrNull { it.thread.id == id } }
-        ?.let { thread ->
-          ModalBottomSheet(onDismissRequest = { selectedThread = null }) {
-            ThreadDetail(
-              thread,
-              Modifier.verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 8.dp),
-            )
-          }
-        }
+    // Folded, a thread is a sheet; replying from it closes it for the composer.
+    if (!wide && thread != null && composer == null) {
+      ModalBottomSheet(onDismissRequest = { selectedThread = null }) {
+        ThreadDetail(
+          thread,
+          controller,
+          Modifier.verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+      }
     }
-    // A composer that doesn't sit in the diff shows here when there's no side pane for it.
-    val composer = controller.composer
-    if (composer != null && controller.composerRows == 0 && !(threePane && showSide)) {
-      ModalBottomSheet(onDismissRequest = controller::cancelComment) {
+    // Folded, the composer covers the screen, with the lines it's on above the text.
+    if (!wide && composer != null) {
+      NavigationBackHandler(
+        rememberNavigationEventState(NavigationEventInfo.None),
+        onBackCompleted = controller::closeComposer,
+      )
+      key(composer) {
         LocalCommentComposer.current.Content(
-          controller.commentRequest(composer),
-          Modifier.fillMaxWidth().padding(16.dp),
+          controller.commentRequest(composer, quote = true),
+          Modifier.fillMaxSize(),
         )
       }
     }
@@ -385,10 +429,9 @@ private fun DiffPane(
     val metrics = rememberCardMetrics(density.codeRowHeight())
     val measurer = rememberTextMeasurer(cacheSize = 64)
     val widthPx = constraints.maxWidth - with(density) { 12.dp.roundToPx() }
-    val composer = LocalCommentComposer.current
-    LaunchedEffect(metrics, widthPx, composer) {
-      controller.composerRows = composer.inlineRows
-      controller.cardRows = { item -> metrics.rows(item, measurer, widthPx, density.density) }
+    LaunchedEffect(metrics, widthPx) {
+      controller.rowPx = metrics.rowPx
+      controller.cardRows = { item -> metrics.rows(item, measurer, widthPx) }
     }
     val delegate =
       remember(controller, metrics) {
@@ -414,7 +457,7 @@ private fun DiffPane(
 
           @Composable
           override fun Annotation(id: Int) {
-            InlineCard(controller.items[id], controller, metrics, onOpenThread)
+            InlineCard(controller.items[id], controller, onOpenThread)
           }
         }
       }
@@ -501,13 +544,12 @@ class ReviewEntries(private val viewModels: PullRequestChangesViewModel.Factory)
       PullRequestChangesScreen(
         viewModel = viewModel(key = route.toString()) { viewModels.create(route) },
         onBack = { navigator.back() },
+        onOpenLink = { link ->
+          val type =
+            if (link.kind == ThreadKind.PullRequest) SubjectType.PullRequest else SubjectType.Issue
+          navigator.push(Route.Thread(route.accountId, link.repo, type.raw, link.number))
+        },
       )
     }
   }
-}
-
-@ContributesTo(AppScope::class)
-interface ReviewBindings {
-  /** One per process: its cache is keyed by blob, so it serves every PR. */
-  @Provides @SingleIn(AppScope::class) fun highlighter(): Highlighter = Highlighter()
 }

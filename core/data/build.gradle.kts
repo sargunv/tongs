@@ -29,3 +29,9 @@ dependencies {
 }
 
 room3 { schemaDirectory("$projectDir/schemas") }
+
+// The diff repository test opens a local object store; its transport never uses the network.
+tasks.named<Test>("jvmTest") {
+  dependsOn(":engine:cargoBuild")
+  systemProperty("java.library.path", rootDir.resolve("target/release").path)
+}

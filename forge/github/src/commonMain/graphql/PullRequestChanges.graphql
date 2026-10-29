@@ -15,8 +15,16 @@ query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
       viewerLatestReviewRequest {
         id
       }
-      viewerLatestReview {
-        state
+      # Only the viewer sees their own pending review.
+      reviews(states: [PENDING], first: 1) {
+        nodes {
+          id
+          body
+          viewerDidAuthor
+          comments {
+            totalCount
+          }
+        }
       }
     }
   }
@@ -46,11 +54,22 @@ query PullRequestReviewThreads(
           isResolved
           isOutdated
           subjectType
+          viewerCanReply
+          viewerCanResolve
+          viewerCanUnresolve
+          resolvedBy {
+            login
+          }
           comments(first: 50) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
             nodes {
               id
               body
               createdAt
+              state
               author {
                 login
                 avatarUrl
@@ -94,5 +113,134 @@ mutation MarkFileAsViewed($pullRequestId: ID!, $path: String!) {
 mutation UnmarkFileAsViewed($pullRequestId: ID!, $path: String!) {
   unmarkFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path }) {
     clientMutationId
+  }
+}
+
+mutation ReplyToReviewThread($threadId: ID!, $body: String!, $reviewId: ID) {
+  addPullRequestReviewThreadReply(
+    input: {
+      pullRequestReviewThreadId: $threadId
+      body: $body
+      pullRequestReviewId: $reviewId
+    }
+  ) {
+    comment {
+      id
+      body
+      createdAt
+      state
+      author {
+        login
+        avatarUrl
+      }
+    }
+  }
+}
+
+mutation ResolveReviewThread($threadId: ID!) {
+  resolveReviewThread(input: { threadId: $threadId }) {
+    thread {
+      id
+      isResolved
+    }
+  }
+}
+
+mutation UnresolveReviewThread($threadId: ID!) {
+  unresolveReviewThread(input: { threadId: $threadId }) {
+    thread {
+      id
+      isResolved
+    }
+  }
+}
+
+# Without an event, the review stays pending.
+mutation StartPendingReview(
+  $pullRequestId: ID!
+  $commitOid: GitObjectID!
+  $threads: [DraftPullRequestReviewThread]
+) {
+  addPullRequestReview(
+    input: {
+      pullRequestId: $pullRequestId
+      commitOID: $commitOid
+      threads: $threads
+    }
+  ) {
+    pullRequestReview {
+      id
+    }
+  }
+}
+
+mutation AddPendingReviewThread(
+  $reviewId: ID!
+  $path: String!
+  $body: String!
+  $line: Int!
+  $side: DiffSide!
+  $startLine: Int
+  $startSide: DiffSide
+) {
+  addPullRequestReviewThread(
+    input: {
+      pullRequestReviewId: $reviewId
+      path: $path
+      body: $body
+      line: $line
+      side: $side
+      startLine: $startLine
+      startSide: $startSide
+    }
+  ) {
+    thread {
+      id
+    }
+  }
+}
+
+mutation SubmitPendingReview(
+  $reviewId: ID!
+  $event: PullRequestReviewEvent!
+  $body: String
+) {
+  submitPullRequestReview(
+    input: { pullRequestReviewId: $reviewId, event: $event, body: $body }
+  ) {
+    pullRequestReview {
+      id
+    }
+  }
+}
+
+mutation DeletePendingReview($reviewId: ID!) {
+  deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
+    pullRequestReview {
+      id
+    }
+  }
+}
+
+query PullRequestReviewThreadComments($id: ID!, $after: String!) {
+  node(id: $id) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          body
+          createdAt
+          state
+          author {
+            login
+            avatarUrl
+          }
+        }
+      }
+    }
   }
 }

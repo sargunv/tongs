@@ -92,9 +92,28 @@ interface DraftDao {
   )
   fun observeHasDraft(accountId: Long, owner: String, name: String, number: Int): Flow<Boolean>
 
-  @Query("SELECT DISTINCT accountId, repoOwner, repoName, number FROM draft")
+  @Query(
+    "SELECT DISTINCT accountId, repoOwner, repoName, number FROM draft",
+  )
   fun observeDraftThreads(): Flow<List<DraftThreadRow>>
+
+  @Query(
+    """
+    SELECT slot, body FROM draft
+    WHERE accountId = :accountId AND repoOwner = :owner AND repoName = :name AND number = :number
+      AND substr(slot, 1, length(:prefix)) = :prefix
+    """,
+  )
+  fun observeSlots(
+    accountId: Long,
+    owner: String,
+    name: String,
+    number: Int,
+    prefix: String,
+  ): Flow<List<DraftSlotRow>>
 }
+
+data class DraftSlotRow(val slot: String, val body: String)
 
 data class DraftThreadRow(
   val accountId: Long,
@@ -160,6 +179,21 @@ class DraftRepository(
   /** Whether the issue or PR has a draft in any slot. */
   fun hasDraft(accountId: Long, repo: RepoRef, number: Int): Flow<Boolean> =
     dao.observeHasDraft(accountId, repo.owner, repo.name, number).distinctUntilChanged()
+
+  /**
+   * The drafts on one issue or PR whose slot starts with [prefix], by slot: for a screen with many
+   * composers, like a PR's changes, to show where drafts were left.
+   */
+  fun slots(
+    accountId: Long,
+    repo: RepoRef,
+    number: Int,
+    prefix: String,
+  ): Flow<Map<String, String>> =
+    dao
+      .observeSlots(accountId, repo.owner, repo.name, number, prefix)
+      .map { rows -> rows.associate { it.slot to it.body } }
+      .distinctUntilChanged()
 
   /** Every issue or PR with a draft, across accounts. */
   fun threadsWithDrafts(): Flow<Set<DraftThread>> =

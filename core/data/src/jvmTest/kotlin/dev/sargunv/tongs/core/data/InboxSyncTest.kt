@@ -101,7 +101,7 @@ class InboxSyncTest {
       )
     sync.poll(account)
 
-    // A partial poll covers threads at least as new as its oldest: 2 was read or done elsewhere,
+    // A partial poll covers threads newer than its oldest: 2 was read or done elsewhere,
     // and 3 isn't covered.
     inbox.polls +=
       changed(thread("1", START - 1.hours), thread("4", START - 150.minutes), complete = false)
@@ -115,6 +115,22 @@ class InboxSyncTest {
     assertEquals(setOf("1", "2", "3", "4"), dao.threads(account).map { it.id }.toSet())
     assertEquals(setOf("2", "3", "4"), readElsewhere(db, account))
     assertEquals(listOf("1"), dao.threads(account).filter { it.unread }.map { it.id })
+  }
+
+  @Test
+  fun aPartialPollDoesNotCoverThreadsTiedWithItsOldest() = dbTest { db ->
+    val (account, clients) = signIn(db, inbox)
+    val sync = InboxSync(db, clients, virtualClock())
+    inbox.polls += changed(thread("1", START - 1.hours), thread("2", START - 2.hours))
+    sync.poll(account)
+
+    // The poll stopped at its page limit inside a run of threads updated at the same time as 2, so
+    // 2 may be on the next page, still unread. 1 is newer than the run, so the poll covers it.
+    inbox.polls +=
+      changed(thread("3", START), thread("4", START - 2.hours), complete = false, cursor = "c2")
+    sync.poll(account)
+    assertEquals(setOf("1"), readElsewhere(db, account))
+    assertEquals(true, db.inbox().thread(account, "2")!!.unread)
   }
 
   @Test

@@ -301,7 +301,17 @@ class FeedAggregationTest {
         event(FeedEventKind.Star, 1.minutes, accountId = 2, id = "42"),
       )
 
-    assertEquals(1, aggregateFeed(events, emptyMap()).single().events.size)
+    assertEquals(
+      1,
+      aggregateFeed(
+          events,
+          emptyMap(),
+          webUrls = mapOf(1L to "https://github.com", 2L to "https://github.com"),
+        )
+        .single()
+        .events
+        .size,
+    )
   }
 
   @Test
@@ -342,6 +352,97 @@ class FeedAggregationTest {
     assertEquals(listOf(listOf(first), listOf(second)), items.map { it.events })
     assertEquals(listOf(first.webUrl, second.webUrl), items.map { it.webUrl })
     assertEquals(2, items.map { it.key }.distinct().size)
+  }
+
+  @Test
+  fun releaseTagsAreSuppressedOnlyOnTheirInstanceAndRemainCaseSensitive() {
+    val release = event(FeedEventKind.Release, 1.minutes, ref = "v1", refType = "Tag")
+    val tag = event(FeedEventKind.RefCreated, 2.minutes, ref = "v1", refType = "Tag", accountId = 2)
+    val otherCase = tag.copy(id = "case", ref = "V1")
+    val elsewhere = tag.copy(id = "elsewhere", accountId = 3)
+    val items =
+      aggregateFeed(
+        listOf(release, tag, otherCase, elsewhere),
+        emptyMap(),
+        webUrls =
+          mapOf(
+            1L to "https://github.com",
+            2L to "https://github.com",
+            3L to "https://git.example.com",
+          ),
+      )
+
+    assertEquals(
+      setOf(release.id, otherCase.id, elsewhere.id),
+      items.flatMap { it.events }.map { it.id }.toSet(),
+    )
+  }
+
+  @Test
+  fun everyBurstAndSingleStarMergeStaysWithinItsInstance() {
+    for (kind in FeedEventKind.entries) {
+      val first =
+        event(
+          kind,
+          1.minutes,
+          number = if (kind == FeedEventKind.Comment) 7 else null,
+          ref = "main",
+          refType = "Branch",
+        )
+      val second = first.copy(accountId = 2, id = "elsewhere")
+      val items =
+        aggregateFeed(
+          listOf(first, second),
+          emptyMap(),
+          webUrls = mapOf(1L to "https://github.com", 2L to "https://git.example.com"),
+        )
+      assertEquals(2, items.size, kind.name)
+      assertEquals(listOf(1, 1), items.map { it.events.size }, kind.name)
+    }
+    val stars =
+      listOf(
+        event(FeedEventKind.Star, 1.minutes, repo = "o/one"),
+        event(FeedEventKind.Star, 2.minutes, repo = "o/two", accountId = 2),
+      )
+    assertEquals(
+      2,
+      aggregateFeed(
+          stars,
+          emptyMap(),
+          webUrls = mapOf(1L to "https://github.com", 2L to "https://git.example.com"),
+        )
+        .size,
+    )
+  }
+
+  @Test
+  fun unknownInstancesFallBackToTheAccountRatherThanAssumingGitHub() {
+    val first = event(FeedEventKind.Star, 1.minutes, id = "shared")
+    assertEquals(2, aggregateFeed(listOf(first, first.copy(accountId = 2)), emptyMap()).size)
+  }
+
+  @Test
+  fun groupingSeparatesInstancesButCombinesAccountsOnTheSameInstance() {
+    val urls =
+      mapOf(1L to "https://github.com", 2L to "https://git.example.com", 3L to "https://github.com")
+    val items =
+      aggregateFeed(
+        listOf(
+          event(FeedEventKind.Release, 1.minutes),
+          event(FeedEventKind.Release, 2.minutes, accountId = 2),
+          event(FeedEventKind.Release, 3.minutes, accountId = 3),
+        ),
+        emptyMap(),
+        webUrls = urls,
+      )
+    for (grouping in listOf(FeedGrouping.Repo, FeedGrouping.Person)) {
+      val sections = groupFeed(items, grouping, urls)
+      assertEquals(
+        listOf(listOf(1L, 3L), listOf(2L)),
+        sections.map { section -> section.items.map { it.accountId } },
+      )
+      assertEquals(2, sections.map { it.key }.distinct().size)
+    }
   }
 
   @Test

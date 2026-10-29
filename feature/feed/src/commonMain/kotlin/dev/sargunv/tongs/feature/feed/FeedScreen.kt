@@ -327,7 +327,14 @@ private fun FeedList(
   keys: RowKeys,
 ) {
   val data = state.data ?: return
-  val sections = remember(data.items, state.grouping) { groupFeed(data.items, state.grouping) }
+  val sections =
+    remember(data.items, state.grouping, state.accounts) {
+      groupFeed(
+        data.items,
+        state.grouping,
+        state.accounts.mapNotNull { account -> account.webUrl?.let { account.id to it } }.toMap(),
+      )
+    }
   val ordered = remember(sections) { sections.flatMap { it.items } }
   val grouped = state.grouping != FeedGrouping.None
   val listState = rememberLazyListState()

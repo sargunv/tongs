@@ -113,6 +113,7 @@ class FeedSync(
 
   /** Polls one account once, stores what's new, and hydrates it. */
   suspend fun poll(accountId: Long, refresh: Boolean = false) = lock.withLock {
+    if (refresh) hydrationBackoff.remove(accountId)
     val state = dao.syncState(accountId)
     val now = clock.now().toEpochMilliseconds()
     val client = clients.client(accountId)
@@ -121,7 +122,8 @@ class FeedSync(
     val result =
       try {
         val feed = client?.feed ?: error("No token for this account")
-        feed.poll(state?.cursor)
+        // A fresh cursor retries cached stream failures, including SSO authorization.
+        feed.poll(state?.cursor.takeUnless { refresh })
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -157,7 +159,7 @@ class FeedSync(
             errorKind = null,
             retryAt = null,
             lastSyncedAt = now,
-            sso = state?.sso?.takeIf { state.lastError == null },
+            sso = state?.sso?.takeIf { !refresh && state.lastError == null },
           ),
         )
       is FeedPoll.Changed ->
@@ -222,7 +224,7 @@ class FeedSync(
     val now = clock.now()
     if ((hydrationBackoff[accountId] ?: Instant.DISTANT_PAST) > now) return
     val hydrator = clients.client(accountId)?.feedHydrator ?: return
-    val pushes = dao.unhydratedPushes(accountId, PUSH_LIMIT)
+    val pushes = dao.unhydratedPushes(accountId, PUSH_LIMIT, retryMissing = refresh)
     val stale = dao.staleSubjects(accountId, SUBJECT_LIMIT)
     val subjects =
       if (refresh)
@@ -247,6 +249,7 @@ class FeedSync(
         hydrationBackoff[accountId] = now + InboxSync.ERROR_BACKOFF
         return
       }
+    hydrationBackoff.remove(accountId)
     _cost.update {
       it.copy(
         requests = it.requests + hydration.requests,

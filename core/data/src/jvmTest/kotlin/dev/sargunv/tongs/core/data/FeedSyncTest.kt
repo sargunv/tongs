@@ -57,14 +57,21 @@ private class FakeFeed : FeedSource {
 private class FakeFeedHydrator : FeedHydrator {
   val subjects = mutableListOf<List<Int>>()
   val pushes = mutableListOf<List<String>>()
+  val failures = ArrayDeque<Exception>()
+  var missingCommits = false
 
   override suspend fun hydrate(subjects: List<SubjectRef>, pushes: List<PushRef>): FeedHydration {
     this.subjects += subjects.map { it.number }
     this.pushes += pushes.map { it.head }
+    failures.removeFirstOrNull()?.let { throw it }
     return FeedHydration(
       subjects =
         subjects.map { SubjectState(it, SubjectType.PullRequest, "PR ${it.number}", "MERGED") },
-      pushes = pushes.map { PushCommits(it, listOf(FeedCommit(it.head, "Commit ${it.head}")), 1) },
+      pushes =
+        pushes.map {
+          if (missingCommits) PushCommits(it, null, null)
+          else PushCommits(it, listOf(FeedCommit(it.head, "Commit ${it.head}")), 1)
+        },
       points = 1,
     )
   }
@@ -108,12 +115,14 @@ class FeedSyncTest {
   private val feed = FakeFeed()
   private val hydrator = FakeFeedHydrator()
 
-  private suspend fun setUp(db: TongsDatabase): Pair<Long, ForgeClients> {
+  private suspend fun setUp(
+    db: TongsDatabase,
+    instance: Instance = Instance.GitHubDotCom,
+  ): Pair<Long, ForgeClients> {
     val tokens = InMemoryTokenStore()
     val adapters = mapOf<ForgeKind, ForgeAdapter>(ForgeKind.GitHub to FeedAdapter(feed, hydrator))
     val clients = ForgeClients(db, tokens, adapters)
-    val account =
-      AccountRepository(db, tokens, adapters, clients).signIn(Instance.GitHubDotCom, "t")
+    val account = AccountRepository(db, tokens, adapters, clients).signIn(instance, "t")
     return account.account.id.value to clients
   }
 
@@ -242,6 +251,137 @@ class FeedSyncTest {
 
     val status = FeedRepository(db, InMemoryPreferences(), virtualClock()).syncStatus().first()
     assertEquals(listOf("corp"), status.single().ssoHidden.map { it.organization })
+  }
+
+  @Test
+  fun refreshDiscardsACursorWithCachedSsoButAutomaticPollingKeepsIt() = dbTest { db ->
+    val (account, clients) = setUp(db)
+    val sync = FeedSync(db, clients, virtualClock())
+    feed.polls +=
+      changed()
+        .copy(ssoRequired = listOf(SsoAuthorization("corp", "https://github.com/orgs/corp/sso")))
+    sync.poll(account)
+    sync.poll(account)
+    assertEquals(listOf(null, "c1"), feed.cursors)
+    assertEquals(
+      1,
+      FeedRepository(db, InMemoryPreferences(), virtualClock())
+        .syncStatus()
+        .first()
+        .single()
+        .ssoHidden
+        .size,
+    )
+
+    sync.refresh()
+
+    assertEquals(listOf(null, "c1", null), feed.cursors)
+    assertNull(db.feed().syncState(account)?.sso)
+  }
+
+  @Test
+  fun refreshRetriesAndClearsEachStoredPollFailure() {
+    val failures =
+      listOf(
+        ForgeException.RateLimited(START + 1.hours),
+        ForgeException.SsoRequired(SsoAuthorization("corp", "https://github.com/orgs/corp/sso")),
+        ForgeException.NoAccess("No access"),
+        IllegalStateException("Offline"),
+      )
+    for (failure in failures) dbTest { db ->
+      val (account, clients) = setUp(db)
+      val sync = FeedSync(db, clients, virtualClock())
+      feed.polls += failure
+      sync.poll(account)
+      assertEquals(failure.message, db.feed().syncState(account)?.lastError)
+
+      sync.refresh()
+
+      val state = db.feed().syncState(account)!!
+      assertNull(state.lastError)
+      assertNull(state.errorKind)
+      assertNull(state.retryAt)
+      assertNull(state.sso)
+      assertEquals(START + 60.seconds, sync.dueAt(account))
+    }
+  }
+
+  @Test
+  fun refreshBypassesHydrationSsoAndRateLimitBackoff() {
+    for (failure in
+      listOf(
+        ForgeException.RateLimited(START + 1.hours),
+        ForgeException.SsoRequired(SsoAuthorization("corp", "https://github.com/orgs/corp/sso")),
+      )) dbTest { db ->
+      val (account, clients) = setUp(db)
+      val sync = FeedSync(db, clients, virtualClock())
+      val attempts = hydrator.subjects.size
+      hydrator.failures += failure
+      feed.polls += changed(pr("1", 7, START), push("2", "abc", START))
+      sync.poll(account)
+      sync.poll(account)
+      assertEquals(attempts + 1, hydrator.subjects.size)
+
+      sync.refresh()
+
+      assertEquals(attempts + 2, hydrator.subjects.size)
+      assertEquals("MERGED", db.feed().subject(account, "octo", "hello", 7)?.state)
+      assertEquals(
+        "Commit abc",
+        db.feed().events(account).first { it.id == "2" }.commitList?.single()?.title,
+      )
+    }
+  }
+
+  @Test
+  fun refreshRetriesPushesWhoseCommitsWereInaccessible() = dbTest { db ->
+    val (account, clients) = setUp(db)
+    val sync = FeedSync(db, clients, virtualClock())
+    hydrator.missingCommits = true
+    feed.polls += changed(push("1", "abc", START))
+    sync.poll(account)
+    sync.poll(account)
+    assertEquals(1, hydrator.pushes.size)
+    assertEquals(true, db.feed().events(account).single().pushHydrated)
+    assertNull(db.feed().events(account).single().commitList)
+    hydrator.missingCommits = false
+
+    sync.refresh()
+
+    assertEquals(2, hydrator.pushes.size)
+    assertEquals("Commit abc", db.feed().events(account).single().commitList?.single()?.title)
+    sync.refresh()
+    assertEquals(2, hydrator.pushes.size)
+  }
+
+  @Test
+  fun roomAndMutesKeepMatchingIdsAndNamesOnDifferentInstancesSeparate() = dbTest { db ->
+    val (first, firstClients) = setUp(db)
+    val (second, secondClients) =
+      setUp(
+        db,
+        Instance(ForgeKind.GitHub, "https://git.example.com", "https://git.example.com/api/v3"),
+      )
+    for ((account, clients) in listOf(first to firstClients, second to secondClients)) {
+      feed.polls += changed(pr("1", 7, START), push("2", "abc", START), cursor = "cursor-$account")
+      FeedSync(db, clients, virtualClock()).poll(account)
+      assertEquals(2, db.feed().events(account).size)
+      assertEquals("MERGED", db.feed().subject(account, "octo", "hello", 7)?.state)
+      assertEquals("cursor-$account", db.feed().syncState(account)?.cursor)
+    }
+    val repository = FeedRepository(db, InMemoryPreferences(), virtualClock())
+    assertEquals(4, repository.feed(100).first().items.size)
+    val repoMute = repository.mute(first, MuteKind.Repo, "octo/hello")
+    assertEquals(setOf(second), repository.feed(100).first().items.map { it.accountId }.toSet())
+    repoMute.undo()
+    val actorMute = repository.mute(first, MuteKind.Actor, "alice")
+    assertEquals(setOf(second), repository.feed(100).first().items.map { it.accountId }.toSet())
+    actorMute.undo()
+    assertEquals(4, repository.feed(100).first().items.size)
+    db.feed().pruneEvents(first, 0)
+    db.feed().pruneSubjects(first)
+    assertEquals(2, db.feed().events(second).size)
+    assertEquals("MERGED", db.feed().subject(second, "octo", "hello", 7)?.state)
   }
 
   @Test

@@ -192,9 +192,14 @@ interface FeedDao {
 
   @Query(
     "SELECT * FROM feed_event WHERE accountId = :accountId AND kind = 'Push' AND " +
-      "pushHydrated = 0 AND head IS NOT NULL ORDER BY createdAt DESC LIMIT :limit",
+      "(pushHydrated = 0 OR (:retryMissing AND commits IS NULL)) " +
+      "AND head IS NOT NULL ORDER BY createdAt DESC LIMIT :limit",
   )
-  suspend fun unhydratedPushes(accountId: Long, limit: Int): List<FeedEventEntity>
+  suspend fun unhydratedPushes(
+    accountId: Long,
+    limit: Int,
+    retryMissing: Boolean = false,
+  ): List<FeedEventEntity>
 
   @Query(
     "UPDATE feed_event SET commits = :commits, commitCount = :count, pushHydrated = 1 " +

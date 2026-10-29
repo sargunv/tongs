@@ -193,6 +193,39 @@ class GitHubEventsTest {
   }
 
   @Test
+  fun aFreshCursorRetriesAnSsoBlockedStreamImmediatelyAfterAuthorization() = runTest {
+    var authorized = false
+    val http = client { request ->
+      when {
+        request.url.encodedPath == "/user/orgs" ->
+          Triple(HttpStatusCode.OK, """[{"login":"corp"}]""", emptyMap())
+        request.url.encodedPath.endsWith("/orgs/corp") && !authorized ->
+          Triple(
+            HttpStatusCode.Forbidden,
+            "{}",
+            mapOf("X-GitHub-SSO" to "required; url=https://github.com/orgs/corp/sso"),
+          )
+        request.url.encodedPath.endsWith("/orgs/corp") ->
+          Triple(HttpStatusCode.OK, "[${event("org-event", "WatchEvent", "{}")} ]", emptyMap())
+        else -> Triple(HttpStatusCode.OK, "[]", emptyMap())
+      }
+    }
+    val source = GitHubEvents(http, Instance.GitHubDotCom, "t", "alice")
+    val blocked = assertIs<FeedPoll.Changed>(source.poll(null))
+    assertEquals(1, blocked.ssoRequired.size)
+    authorized = true
+    requests.clear()
+    source.poll(blocked.cursor)
+    assertTrue(requests.none { it.url.encodedPath.endsWith("/orgs/corp") })
+
+    val refreshed = assertIs<FeedPoll.Changed>(source.poll(null))
+
+    assertEquals(listOf("org-event"), refreshed.events.map { it.id })
+    assertEquals(emptyList(), refreshed.ssoRequired)
+    assertTrue(requests.any { it.url.encodedPath.endsWith("/orgs/corp") })
+  }
+
+  @Test
   fun mergesAllStreamsPagesOrganizationsAndHonorsTheLargestInterval() = runTest {
     val http = client { request ->
       val url = request.url

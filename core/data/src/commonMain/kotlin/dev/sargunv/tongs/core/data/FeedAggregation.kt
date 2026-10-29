@@ -194,19 +194,27 @@ fun aggregateFeed(
   val visible =
     events
       .filterNot { mutes[it.accountId]?.mutes(it) == true }
-      .distinctBy { (webUrls[it.accountId] ?: "github") to it.id }
+      .distinctBy { instanceKey(it.accountId, webUrls) to it.id }
       .sortedWith(compareByDescending<FeedEventEntity> { it.createdAt }.thenByDescending { it.id })
   val releasedTags =
     visible
       .filter { it.eventKind == FeedEventKind.Release && it.ref != null }
-      .mapTo(HashSet()) { "${it.repoOwner}/${it.repoName}@${it.ref}" }
+      .mapTo(HashSet()) {
+        Triple(
+          instanceKey(it.accountId, webUrls),
+          "${it.repoOwner}/${it.repoName}".lowercase(),
+          it.ref,
+        )
+      }
 
   // Each burst collects its events, newest first; bursts keep the order of their newest event.
   class Burst(val key: String, val events: MutableList<FeedEventEntity>)
   val bursts = mutableListOf<Burst>()
   val open = mutableMapOf<String, Burst>()
   for (event in visible) {
-    val repo = "${webUrls[event.accountId]}:${event.repoOwner}/${event.repoName}".lowercase()
+    val instance = instanceKey(event.accountId, webUrls)
+    val repoName = "${event.repoOwner}/${event.repoName}".lowercase()
+    val repo = "$instance:$repoName"
     val kind = event.eventKind
     val key =
       when {
@@ -225,13 +233,13 @@ fun aggregateFeed(
           "push:$repo:${event.ref}"
         kind == FeedEventKind.RefCreated &&
           event.refType == RefType.Tag.name &&
-          "${event.repoOwner}/${event.repoName}@${event.ref}" in releasedTags -> continue
+          Triple(instance, repoName, event.ref) in releasedTags -> continue
         (kind == FeedEventKind.RefCreated && event.refType == RefType.Tag.name) ||
           kind == FeedEventKind.RefDeleted ->
           "refs:$repo:${event.actorLogin.lowercase()}:${kind.name}:${event.refType}"
         kind == FeedEventKind.Star -> "star:$repo"
         kind == FeedEventKind.Fork -> "fork:$repo"
-        else -> "single:${webUrls[event.accountId] ?: "github"}:${event.id}"
+        else -> "single:$instance:${event.id}"
       }
     val gap = if (kind == FeedEventKind.Star || kind == FeedEventKind.Fork) starGap else burstGap
     val burst = open[key]
@@ -249,6 +257,9 @@ fun aggregateFeed(
   val items = bursts.map { burst -> toItem(burst.key, burst.events, subjects, webUrls) }
   return mergeSingleStars(items, starGap, webUrls)
 }
+
+private fun instanceKey(accountId: Long, webUrls: Map<Long, String>): String =
+  webUrls[accountId] ?: "account:$accountId"
 
 /** The key [aggregateFeed] looks subjects up by. */
 fun subjectKey(accountId: Long, owner: String, name: String, number: Int) =
@@ -423,7 +434,7 @@ private fun mergeSingleStars(
     items
       .filter { it is FeedItem.Starred && it.events.size == 1 }
       .groupBy {
-        (webUrls[it.accountId] ?: "github") to it.events.single().actorLogin.lowercase()
+        instanceKey(it.accountId, webUrls) to it.events.single().actorLogin.lowercase()
       }
   val replace = mutableMapOf<FeedItem, FeedItem?>()
   for ((_, stars) in singles) {
@@ -479,18 +490,24 @@ data class FeedSection(
  * Groups [items] by their first repo or first person, groups ordered by their newest item and items
  * newest first within. With [FeedGrouping.None], one untitled section.
  */
-fun groupFeed(items: List<FeedItem>, grouping: FeedGrouping): List<FeedSection> =
+fun groupFeed(
+  items: List<FeedItem>,
+  grouping: FeedGrouping,
+  webUrls: Map<Long, String> = emptyMap(),
+): List<FeedSection> =
   when (grouping) {
     FeedGrouping.None -> listOf(FeedSection("all", "", null, items))
     FeedGrouping.Repo ->
       items
-        .groupBy { it.repos.first().toString().lowercase() }
+        .groupBy {
+          "${instanceKey(it.accountId, webUrls)}:${it.repos.first().toString().lowercase()}"
+        }
         .map { (key, group) ->
           FeedSection("repo:$key", group.first().repos.first().toString(), null, group)
         }
     FeedGrouping.Person ->
       items
-        .groupBy { it.actors.first().login.lowercase() }
+        .groupBy { "${instanceKey(it.accountId, webUrls)}:${it.actors.first().login.lowercase()}" }
         .map { (key, group) ->
           val person = group.first().actors.first()
           FeedSection("person:$key", person.login, person.avatarUrl, group)

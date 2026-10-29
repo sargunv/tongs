@@ -79,6 +79,7 @@ class ThreadRepositoryTest {
     var detail = detail()
     val calls = mutableListOf<String>()
     var gate: CompletableDeferred<Unit>? = null
+    var pageGate: CompletableDeferred<Unit>? = null
     var reviewThreads = emptyList<ReviewThread>()
 
     private fun timeline() = (0 until count).map { comment("$it", it) }
@@ -106,6 +107,7 @@ class ThreadRepositoryTest {
       count: Int,
     ): TimelinePage {
       calls += "page $cursor"
+      pageGate?.await()
       val all = timeline()
       val start = all.indexOfFirst { "c:${it.id}" == cursor } + 1
       val items = all.drop(start).take(2)
@@ -225,6 +227,34 @@ class ThreadRepositoryTest {
   }
 
   @Test
+  fun aPageOfHiddenItemsFromBeforeARefreshIsDropped() = dbTest { db ->
+    val source = FakeThreads(count = 10)
+    val f = fixture(db, source)
+    f.threads.refresh(f.ref)
+    f.threads.loadHidden(f.ref)
+    assertEquals(
+      listOf("0", "1", "2", "3", "7", "8", "9"),
+      f.threads.observe(f.ref).first()!!.ids(),
+    )
+
+    // The next page is in flight when a refresh resets the timeline to its two ends.
+    source.pageGate = CompletableDeferred()
+    val loading = launch { f.threads.loadHidden(f.ref) }
+    eventually { "page c:3" in source.calls }
+    f.threads.refresh(f.ref)
+    source.pageGate!!.complete(Unit)
+    loading.join()
+
+    var snapshot = f.threads.observe(f.ref).first()!!
+    assertEquals(listOf("0", "1", "7", "8", "9"), snapshot.ids())
+    assertEquals(5, snapshot.hiddenCount)
+    source.pageGate = null
+    f.threads.loadHidden(f.ref)
+    snapshot = f.threads.observe(f.ref).first()!!
+    assertEquals(listOf("0", "1", "2", "3", "7", "8", "9"), snapshot.ids())
+  }
+
+  @Test
   fun refreshReplacesItemsButKeepsPendingComments() = dbTest { db ->
     val source = FakeThreads(count = 3)
     val f = fixture(db, source)
@@ -275,6 +305,40 @@ class ThreadRepositoryTest {
     assertEquals(listOf("0", "1"), f.threads.observe(f.ref).first()!!.ids())
     assertEquals("Looks good", f.drafts.get(f.ref.replyDraft))
     assertTrue(failures.single().contains("403 Forbidden"))
+  }
+
+  @Test
+  fun aRefusedCommentKeepsTheTextSentNotAnOlderDraft() = dbTest { db ->
+    val source = FakeThreads(count = 2).apply { gate = CompletableDeferred() }
+    val f = fixture(db, source)
+    f.threads.refresh(f.ref)
+    // The composer autosaves 400 ms after typing stops; sending sooner leaves an older draft.
+    f.drafts.save(f.ref.replyDraft, "Looks")
+    val failures = mutableListOf<String>()
+    backgroundScope.launchCollect(f.threads.failures, failures)
+
+    f.threads.comment(f.ref, "Looks good")
+    source.gate!!.completeExceptionally(IllegalStateException("403 Forbidden"))
+    eventually { failures.isNotEmpty() }
+
+    assertEquals("Looks good", f.drafts.get(f.ref.replyDraft))
+  }
+
+  @Test
+  fun aSlowSendLeavesADraftWrittenSinceAlone() = dbTest { db ->
+    val source = FakeThreads(count = 2).apply { gate = CompletableDeferred() }
+    val f = fixture(db, source)
+    f.threads.refresh(f.ref)
+    f.drafts.save(f.ref.replyDraft, "Looks good")
+
+    f.threads.comment(f.ref, "Looks good", close = StateReason.Completed)
+    eventually { source.calls.isNotEmpty() }
+    // While it's sending, the composer is reopened and a follow-up written.
+    f.drafts.save(f.ref.replyDraft, "One more thing")
+    source.gate!!.complete(Unit)
+    eventually { "close COMPLETED" in source.calls }
+
+    assertEquals("One more thing", f.drafts.get(f.ref.replyDraft))
   }
 
   @Test

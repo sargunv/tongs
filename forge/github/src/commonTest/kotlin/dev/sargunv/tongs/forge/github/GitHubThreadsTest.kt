@@ -175,6 +175,44 @@ class GitHubThreadsTest {
   }
 
   @Test
+  fun pagesBackThroughReviewThreads() = runTest {
+    fun reviewThread(id: String) =
+      """{"__typename":"PullRequestReviewThread","id":"$id","path":"a.kt","line":1,
+        "originalLine":1,"isResolved":false,"isOutdated":false,
+        "comments":{"totalCount":0,"nodes":[]}}"""
+    val newest =
+      PULL_REQUEST.replace(
+        "\"hasPreviousPage\":false,\"startCursor\":null",
+        "\"hasPreviousPage\":true,\"startCursor\":\"RT_2\"",
+      )
+    val threads =
+      threads(
+        "Thread" to { newest },
+        "ThreadPullRequestFiles" to { files(emptyList(), next = null) },
+        "ThreadReviewThreads" to
+          { request ->
+            val (nodes, previous) =
+              when (request.variables["cursor"]!!.jsonPrimitive.content) {
+                "RT_2" -> reviewThread("PRRT_B") to "RT_1"
+                else -> reviewThread("PRRT_A") to null
+              }
+            """{"data":{"repository":{"pullRequest":{"reviewThreads":{"__typename":"PullRequestReviewThreadConnection",
+              "pageInfo":{"hasPreviousPage":${previous != null},
+                "startCursor":${previous?.let { "\"$it\"" }}},
+              "nodes":[$nodes]}}}}}"""
+          },
+      )
+    val load = threads.load(repo, 7)
+    assertEquals(listOf("PRRT_A", "PRRT_B", "PRRT_1"), load.reviewThreads.map { it.id })
+    assertEquals(
+      listOf("RT_2", "RT_1"),
+      requests
+        .filter { it.operation == "ThreadReviewThreads" }
+        .map { it.variables["cursor"]!!.jsonPrimitive.content },
+    )
+  }
+
+  @Test
   fun mapsAnIssueAndItsEvents() = runTest {
     val load = threads("Thread" to { ISSUE }).load(repo, 9)
     val detail = load.detail
@@ -413,7 +451,7 @@ private val PULL_REQUEST =
           {"__typename":"MergedEvent","id":"ME_1","createdAt":"2026-10-22T09:00:00Z",
            "actor":${actor("mona")},"mergeRefName":"main","mergeCommit":{"oid":"def456"}}
         ]},
-      "reviewThreads":{"nodes":[
+      "reviewThreads":{"__typename":"PullRequestReviewThreadConnection","pageInfo":{"hasPreviousPage":false,"startCursor":null},"nodes":[
         {"__typename":"PullRequestReviewThread","id":"PRRT_1","path":"src/main.kt","line":9,
          "originalLine":9,"isResolved":false,"isOutdated":false,
          "comments":{"totalCount":3,"nodes":[

@@ -188,14 +188,16 @@ class InboxSync(
     val existing = dao.threads(accountId).associateBy { it.id }
     dao.upsert(poll.threads.map { it.toEntity(accountId, existing[it.id]) })
     val seen = poll.threads.mapTo(HashSet()) { it.id }
-    val coveredFrom = poll.threads.minOfOrNull { it.updatedAt.toEpochMilliseconds() }
+    // A partial poll covers threads newer than its oldest. Not those tied with it: a poll that
+    // stopped at its page limit may have left the rest of a tie for the next page.
+    val coveredAfter = poll.threads.minOfOrNull { it.updatedAt.toEpochMilliseconds() }
     // Threads in organizations the forge hid for SSO may be missing without having changed.
     val hiddenOrgs = poll.ssoRequired.mapNotNullTo(HashSet()) { it.organization?.lowercase() }
     val missing =
       existing.values.filter {
         it.id !in seen &&
           it.repoOwner.lowercase() !in hiddenOrgs &&
-          (poll.complete || (coveredFrom != null && it.updatedAt >= coveredFrom))
+          (poll.complete || (coveredAfter != null && it.updatedAt > coveredAfter))
       }
     // Tongs keeps its own inbox: a thread joins when the forge says it's unread, and leaves only
     // when it's marked done here. A missing thread is never deleted, because GitHub can't say

@@ -171,7 +171,7 @@ fun InboxScreen(
         override fun signIn() = onSignIn()
       }
     }
-  InboxContent(state, viewModel.now(), selected, actions, snackbar)
+  InboxContent(state, viewModel::now, selected, actions, snackbar)
 }
 
 /**
@@ -183,12 +183,13 @@ fun InboxScreen(
 @Composable
 fun InboxContent(
   state: InboxUiState,
-  now: Instant,
+  now: () -> Instant,
   selected: (InboxRow) -> Boolean,
   actions: InboxActions,
   snackbar: SnackbarHostState = remember { SnackbarHostState() },
   filterOpen: Boolean = false,
 ) {
+  val currentTime = now()
   var snoozing by remember { mutableStateOf<InboxRow?>(null) }
   var editingView by remember { mutableStateOf<Boolean?>(null) } // true: edit, false: new
   var showFilter by remember { mutableStateOf(filterOpen) }
@@ -295,7 +296,7 @@ fun InboxContent(
         )
       }
       Box(Modifier.padding(top = 4.dp))
-      SyncBanners(state, now, actions)
+      SyncBanners(state, currentTime, actions)
       when {
         rows == null ->
           Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { LoadingIndicator() }
@@ -306,12 +307,12 @@ fun InboxContent(
             modifier = Modifier.fillMaxSize(),
           ) {
             if (rows.isEmpty()) {
-              EmptyInbox(state, now, actions)
+              EmptyInbox(state, currentTime, actions)
             } else {
               InboxList(
                 rows = rows,
                 state = state,
-                now = now,
+                now = currentTime,
                 selected = selected,
                 actions = actions,
                 focus = listFocus,
@@ -326,8 +327,9 @@ fun InboxContent(
   // Dialogs hand the keyboard back to the list when they close.
   fun backToList() = focusInbox()
   snoozing?.let { row ->
+    val openedAt = remember(row) { now() }
     SnoozeDialog(
-      now = now,
+      now = openedAt,
       onPick = {
         actions.snooze(row, it)
         snoozing = null

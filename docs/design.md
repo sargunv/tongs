@@ -795,18 +795,18 @@ Mermaid and math.
 
 All versions verified against releases on 2026-10-28.
 
-| Area                 | Choice                                                                                                                                         |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Language and UI      | Kotlin 2.4.21, Compose Multiplatform 1.12.2, AGP 9.4.1, Gradle 9.8 with a version catalog                                                      |
-| Material             | Material 3 Expressive (`org.jetbrains.compose.material3` 1.12.0-alpha03), material3-adaptive 1.3.0, material-kolor 5 for desktop colors        |
-| Navigation and state | Navigation 3 (JetBrains 1.2.0), KMP ViewModel 2.11                                                                                             |
-| DI                   | Metro 1.5 (forge adapters registered as a multibinding map)                                                                                    |
-| Data                 | Room 3.0 (`androidx.room3`) with bundled SQLite 2.7, DataStore 1.3, Ktor 3.6, Apollo 5.2, kotlinx.serialization 1.12, kotlinx-datetime 0.8     |
-| Images               | Coil 3.6 (`coil-network-ktor3` on the app's client); Markdown through mikepenz's multiplatform-markdown-renderer 0.46                          |
-| Engine               | Rust with gix-protocol, gix-pack, gix-diff, gix-attributes, imara-diff, tree-house plus Helix queries, and `linguist`; UniFFI 0.32 plus jni-rs |
-| Testing              | kotlin.test, Turbine, Ktor's mock engine, Compose UI tests, Roborazzi 1.77 on desktop; cargo tests and criterion benches for the engine        |
-| Formatting and lint  | ktfmt through dprint; detekt 2 once it's out of alpha                                                                                          |
-| Desktop packaging    | Compose native distributions; Conveyor if we want auto-update                                                                                  |
+| Area                 | Choice                                                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language and UI      | Kotlin 2.4.21, Compose Multiplatform 1.12.2, AGP 9.4.1, Gradle 9.8 with a version catalog                                                         |
+| Material             | Material 3 Expressive (`org.jetbrains.compose.material3` 1.12.0-alpha03), material3-adaptive 1.3.0, MaterialKolor 6.0.0-beta01 for desktop colors |
+| Navigation and state | Navigation 3 (JetBrains 1.2.0), KMP ViewModel 2.11                                                                                                |
+| DI                   | Metro 1.5 (forge adapters registered as a multibinding map)                                                                                       |
+| Data                 | Room 3.0 (`androidx.room3`) with bundled SQLite 2.7, DataStore 1.3, Ktor 3.6, Apollo 5.2, kotlinx.serialization 1.12, kotlinx-datetime 0.8        |
+| Images               | Coil 3.6 (`coil-network-ktor3` on the app's client); Markdown through mikepenz's multiplatform-markdown-renderer 0.46                             |
+| Engine               | Rust with gix-protocol, gix-pack, gix-diff, gix-attributes, imara-diff, tree-house plus Helix queries, and `linguist`; UniFFI 0.32 plus jni-rs    |
+| Testing              | kotlin.test, Turbine, Ktor's mock engine, Compose UI tests, Roborazzi 1.77 on desktop; cargo tests and criterion benches for the engine           |
+| Formatting and lint  | ktfmt through dprint; detekt 2 once it's out of alpha                                                                                             |
+| Desktop packaging    | Nucleus native distributions; Conveyor if we want auto-update                                                                                     |
 
 **Android floor.** minSdk 31 (Android 12), compileSdk and targetSdk 37, NDK r30
 (30.0.16248370), with the engine built by cargo-ndk.
@@ -845,11 +845,26 @@ All versions verified against releases on 2026-10-28.
   `forge/github` has a 50-line adapter that sends Apollo's requests through the
   app's Ktor client.
 - **detekt 2** is still alpha (2.0.0-alpha.6), so it isn't set up yet.
-- **Nucleus** (2.5.18) isn't adopted. Its decorated window needs
-  `nucleusApplication` and its Tao windowing backend in place of AWT, or a
-  deprecated backend that needs the JetBrains Runtime. That would change the
-  window under the spike modes, which use AWT and Skiko's render API. Revisit it
-  for a custom title bar once the app's chrome settles.
+- **Desktop windows use Nucleus** `3.0.0-dev-202610110853`, matching
+  Stringline's working setup: `nucleusApplication` and a Tao `DecoratedWindow`,
+  native on Wayland so fractional scaling does not upscale an XWayland/AWT
+  window. A 32 dp overlay title bar has draggable space and platform window
+  controls; its chrome padding is unioned with the safe drawing area before
+  laying out the app. Unconsumed Escape key presses go to Compose's back
+  dispatcher, since Tao does not supply Compose's AWT Escape-to-back mapping.
+  The spike and benchmark windows remain AWT, and offscreen screenshot modes
+  keep their existing Skiko/Compose scenes. The Gradle `run` command stays the
+  same; macOS launchers use `-XstartOnFirstThread` for Tao.
+- **Desktop color follows the OS accent,** observed through Nucleus's
+  `system-color` module. MaterialKolor's `material-kolor-material3` builds a
+  `TonalSpot` scheme with `SPEC_2025`, falling back to blue (`#426DA9`) when the
+  OS reports no accent. Chrome and app content follow the same theme. Android
+  keeps Material's wallpaper dynamic color.
+- **Signed-out navigation is hidden at every width,** including the wide rail,
+  so it cannot replace sign-in with an empty inbox. Sign-in stores the token
+  inside the account's Room write transaction: observers and the first inbox
+  poll only see the account after its token is ready. A failed token write rolls
+  back the new account row.
 
 **Module layout,** as built. Layering is strict: features see the core modules
 and `forge/api`, never a forge adapter or each other, and the app module wires

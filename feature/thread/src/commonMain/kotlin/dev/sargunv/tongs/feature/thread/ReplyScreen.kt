@@ -2,8 +2,10 @@ package dev.sargunv.tongs.feature.thread
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.sargunv.tongs.core.composer.Composer
 import dev.sargunv.tongs.core.composer.ComposerAction
@@ -24,17 +26,26 @@ fun ReplyScreen(viewModel: ReplyViewModel, onClose: () -> Unit) {
   val webUrl by viewModel.webUrl.collectAsStateWithLifecycle()
   val state = rememberComposerState(viewModel.ref.replyDraft, viewModel.drafts)
   val scope = rememberCoroutineScope()
+  var sending by remember(state) { mutableStateOf(false) }
   ReplyContent(
     state = state,
     detail = snapshot?.detail,
     number = viewModel.ref.number,
     repo = viewModel.ref.repo.toString(),
     webUrl = webUrl,
+    sending = sending,
     onSend = { body, close, reopen ->
-      scope.launch {
-        viewModel.send(body, close, reopen)
-        state.markSent()
-        onClose()
+      if (!sending) {
+        sending = true
+        scope.launch {
+          try {
+            viewModel.send(body, close, reopen)
+            state.markSent()
+            onClose()
+          } finally {
+            sending = false
+          }
+        }
       }
     },
     onClose = onClose,
@@ -51,6 +62,7 @@ fun ReplyContent(
   webUrl: String,
   onSend: (body: String, close: Boolean, reopen: Boolean) -> Unit,
   onClose: () -> Unit,
+  sending: Boolean = false,
 ) {
   val context = remember(webUrl, detail?.repo) { MarkdownContext(webUrl, detail?.repo) }
   val blank = state.isBlank
@@ -63,6 +75,7 @@ fun ReplyContent(
           onClick = { onSend(it, true, false) },
           icon = ConversationIcons.CheckCircle,
           allowsEmpty = true,
+          enabled = !sending,
         ),
       )
     }
@@ -73,6 +86,7 @@ fun ReplyContent(
           onClick = { onSend(it, false, true) },
           icon = TongsIcons.Undo,
           allowsEmpty = true,
+          enabled = !sending,
         ),
       )
     }
@@ -82,7 +96,7 @@ fun ReplyContent(
         onClick = { onSend(it, false, false) },
         icon = ConversationIcons.Send,
         primary = true,
-        enabled = detail?.viewer?.canComment != false,
+        enabled = !sending && detail?.viewer?.canComment != false,
       ),
     )
   }

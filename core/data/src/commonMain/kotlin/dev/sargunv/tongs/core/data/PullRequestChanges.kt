@@ -71,12 +71,7 @@ class PullRequestChangesRepository(
   val failures: SharedFlow<String> = _failures
 
   fun overview(key: PullRequestKey): Flow<PullRequestOverviewEntity?> =
-    combine(
-      dao.observeOverview(key.accountId, key.repo.owner, key.repo.name, key.number),
-      cacheFlow(key),
-    ) { row, cache ->
-      row?.let(cache::overview)
-    }
+    dao.observeOverview(key.accountId, key.repo.owner, key.repo.name, key.number)
 
   /** Every file version marked viewed, including ones still on their way to the forge. */
   fun viewed(key: PullRequestKey): Flow<Set<FileVersion>> =
@@ -88,11 +83,8 @@ class PullRequestChangesRepository(
       .distinctUntilChanged()
 
   fun drafts(key: PullRequestKey): Flow<List<DraftComment>> =
-    combine(
-      dao.observeDrafts(key.accountId, key.repo.owner, key.repo.name, key.number),
-      cacheFlow(key),
-    ) { rows, cache ->
-      rows.map { cache.draft(it).toDraft() }
+    dao.observeDrafts(key.accountId, key.repo.owner, key.repo.name, key.number).map { rows ->
+      rows.map { it.toDraft() }
     }
 
   fun summary(key: PullRequestKey): Flow<String> =
@@ -114,11 +106,10 @@ class PullRequestChangesRepository(
     combine(
       dao.observeThreads(key.accountId, key.repo.owner, key.repo.name, key.number),
       dao.observeThreadComments(key.accountId, key.repo.owner, key.repo.name, key.number),
-      cacheFlow(key),
-    ) { threads, comments, cache ->
+    ) { threads, comments ->
       val byThread = comments.groupBy { it.threadId }
       threads.map {
-        ReviewThreadWithComments(cache.thread(it), byThread[it.id].orEmpty().map(cache::comment))
+        ReviewThreadWithComments(it, byThread[it.id].orEmpty())
       }
     }
 
@@ -155,27 +146,6 @@ class PullRequestChangesRepository(
           syncedAt = now,
         ),
       )
-      val oldCache = cache(key)
-      saveCache(
-        key,
-        oldCache.copy(
-          pendingId = overview.pendingReview?.id,
-          pendingBody = overview.pendingReview?.body,
-          pendingCount = overview.pendingReview?.commentCount ?: 0,
-          permissions =
-            threads.associate {
-              it.id to
-                ThreadPermissions(
-                  it.viewerCanReply,
-                  it.viewerCanResolve && (key to it.id) !in resolving,
-                  it.viewerCanUnresolve && (key to it.id) !in resolving,
-                  it.resolvedBy,
-                )
-            },
-          pendingComments =
-            threads.flatMap { it.comments }.filter { it.pending }.mapTo(HashSet()) { it.id },
-        ),
-      )
       dao.deleteThreads(key.accountId, key.repo.owner, key.repo.name, key.number)
       dao.upsertThreads(
         threads.mapIndexed { i, t ->
@@ -196,8 +166,8 @@ class PullRequestChangesRepository(
             isFileLevel = t.isFileLevel,
             position = i,
             viewerCanReply = t.viewerCanReply,
-            viewerCanResolve = t.viewerCanResolve,
-            viewerCanUnresolve = t.viewerCanUnresolve,
+            viewerCanResolve = t.viewerCanResolve && (key to t.id) !in resolving,
+            viewerCanUnresolve = t.viewerCanUnresolve && (key to t.id) !in resolving,
             resolvedBy = t.resolvedBy,
           )
         },
@@ -235,8 +205,9 @@ class PullRequestChangesRepository(
    * their way to the forge are left alone, and so are files the forge didn't list.
    *
    * A change the app was sending when it last stopped is still marked pending in Room with nothing
-   * sending it; it goes to the forge again now. If the forge refuses, it's dropped, and the next
-   * sync takes the forge's state.
+   * sending it; it goes to the forge again only if its path and blob are still current. Obsolete
+   * mutations are deleted. If the forge refuses, it's dropped, and the next sync takes the forge's
+   * state.
    */
   suspend fun syncViewed(key: PullRequestKey, files: Collection<FileVersion>) {
     val (owner, repo) = key.repo.owner to key.repo.name
@@ -244,7 +215,13 @@ class PullRequestChangesRepository(
       if (!row.pending) continue
       val id = ViewedId(key, FileVersion(row.path, row.blobOid))
       val abandoned = viewedLock.withLock { (id !in queued).also { if (it) confirmed[id] = null } }
-      if (abandoned) send(key, id.file, row.viewed, row)
+      if (!abandoned) continue
+      if (id.file in files) {
+        send(key, id.file, row.viewed, row)
+      } else {
+        dao.deleteViewed(key.accountId, owner, repo, key.number, row.path, row.blobOid)
+        viewedLock.withLock { confirmed -= id }
+      }
     }
     val remote = api(key).viewedFiles(key.repo, key.number) ?: return
     mergeViewed(key, files, remote)
@@ -388,19 +365,8 @@ class PullRequestChangesRepository(
         updatedAt = now,
         inReplyTo = inReplyTo,
       )
-    return db.withWriteTransaction {
-      val rowId = dao.upsertDraft(entity)
-      val savedId = if (id != 0L) id else rowId
-      val cache = cache(key)
-      saveCache(
-        key,
-        cache.copy(
-          replies =
-            cache.replies - savedId + (inReplyTo?.let { mapOf(savedId to it) } ?: emptyMap()),
-        ),
-      )
-      savedId
-    }
+    val rowId = dao.upsertDraft(entity)
+    return if (id != 0L) id else rowId
   }
 
   suspend fun setSummary(key: PullRequestKey, summary: String) =
@@ -428,11 +394,14 @@ class PullRequestChangesRepository(
    */
   suspend fun submit(key: PullRequestKey, event: ReviewEvent, summary: String, headOid: String) {
     val (owner, repo) = key.repo.owner to key.repo.name
-    val cache = cache(key)
-    val drafts = dao.drafts(key.accountId, owner, repo, key.number).map(cache::draft)
+    val drafts = db.withWriteTransaction {
+      // Submission can beat the field's autosave debounce.
+      setSummary(key, summary)
+      dao.drafts(key.accountId, owner, repo, key.number)
+    }
     val commit = drafts.map { it.commitOid }.distinct().singleOrNull() ?: headOid
     val (replies, lines) = drafts.partition { it.inReplyTo != null }
-    val overview = dao.overview(key.accountId, owner, repo, key.number)?.let(cache::overview)
+    val overview = dao.overview(key.accountId, owner, repo, key.number)
     val api = api(key)
     try {
       val remote = overview?.pendingReviewId
@@ -496,10 +465,6 @@ class PullRequestChangesRepository(
         // An open composer can have newer words even before Update saves them to this row.
         if (editing != null && editing != draft.body) continue
         dao.deleteDraftIfUnchanged(draft.id, draft.updatedAt, draft.body)
-        if (dao.draft(draft.id) == null) {
-          val cache = cache(key)
-          saveCache(key, cache.copy(replies = cache.replies - draft.id))
-        }
       }
     }
   }
@@ -510,7 +475,7 @@ class PullRequestChangesRepository(
    */
   suspend fun continuePendingReview(key: PullRequestKey) {
     val (owner, repo) = key.repo.owner to key.repo.name
-    val remote = cache(key).pendingBody.orEmpty()
+    val remote = dao.overview(key.accountId, owner, repo, key.number)?.pendingReviewBody.orEmpty()
     db.withWriteTransaction {
       val local = dao.draftReview(key.accountId, owner, repo, key.number)?.summary.orEmpty()
       setSummary(key, local.ifBlank { remote })
@@ -523,29 +488,12 @@ class PullRequestChangesRepository(
    */
   suspend fun discardPendingReview(key: PullRequestKey) {
     val (owner, repo) = key.repo.owner to key.repo.name
-    val reviewId = cache(key).pendingId ?: return
+    val reviewId = dao.overview(key.accountId, owner, repo, key.number)?.pendingReviewId ?: return
     val before = overview(key).first()
     val beforeThreads = threads(key).first()
-    val beforeCache = cache(key)
     db.withWriteTransaction {
       dao.clearPendingReview(key.accountId, owner, repo, key.number)
-      val cache = cache(key)
-      dao.deletePendingComments(
-        key.accountId,
-        owner,
-        repo,
-        key.number,
-        cache.pendingComments.toList(),
-      )
-      saveCache(
-        key,
-        cache.copy(
-          pendingId = null,
-          pendingBody = null,
-          pendingCount = 0,
-          pendingComments = emptySet(),
-        ),
-      )
+      dao.deletePendingComments(key.accountId, owner, repo, key.number)
       dao.deleteEmptyThreads(key.accountId, owner, repo, key.number)
     }
     scope.launch {
@@ -555,16 +503,6 @@ class PullRequestChangesRepository(
             before?.let { dao.upsertOverview(it) }
             dao.upsertThreads(beforeThreads.map { it.thread })
             dao.upsertThreadComments(beforeThreads.flatMap { it.comments })
-            val current = cache(key)
-            saveCache(
-              key,
-              current.copy(
-                pendingId = beforeCache.pendingId,
-                pendingBody = beforeCache.pendingBody,
-                pendingCount = beforeCache.pendingCount,
-                pendingComments = beforeCache.pendingComments,
-              ),
-            )
           }
           _failures.tryEmit("Couldn't discard the pending review: ${it.message}")
         }
@@ -640,23 +578,10 @@ class PullRequestChangesRepository(
     val before =
       db.withWriteTransaction<ChangesThreadEntity?> {
         if (id in resolving) return@withWriteTransaction null
-        val cache = cache(key)
-        val row =
-          dao.thread(key.accountId, threadId)?.let(cache::thread)
-            ?: return@withWriteTransaction null
+        val row = dao.thread(key.accountId, threadId) ?: return@withWriteTransaction null
         if (row.isResolved == resolved) return@withWriteTransaction null
         resolving[id] = resolved
-        dao.setThreadResolved(key.accountId, threadId, resolved)
-        cache.permissions[threadId]?.let { permission ->
-          saveCache(
-            key,
-            cache.copy(
-              permissions =
-                cache.permissions +
-                  (threadId to permission.copy(resolve = false, unresolve = false)),
-            ),
-          )
-        }
+        dao.setThreadResolved(key.accountId, threadId, resolved, false, false)
         row
       } ?: return
     scope.launch {
@@ -664,16 +589,13 @@ class PullRequestChangesRepository(
       db.withWriteTransaction {
         resolving -= id
         val settled = if (result.isSuccess) resolved else before.isResolved
-        dao.setThreadResolved(key.accountId, threadId, settled)
-        val cache = cache(key)
-        val permission =
-          ThreadPermissions(
-            before.viewerCanReply,
-            if (result.isSuccess) !settled else before.viewerCanResolve,
-            if (result.isSuccess) settled else before.viewerCanUnresolve,
-            before.resolvedBy,
-          )
-        saveCache(key, cache.copy(permissions = cache.permissions + (threadId to permission)))
+        dao.setThreadResolved(
+          key.accountId,
+          threadId,
+          settled,
+          if (result.isSuccess) !settled else before.viewerCanResolve,
+          if (result.isSuccess) settled else before.viewerCanUnresolve,
+        )
       }
       result.onFailure {
         _failures.tryEmit(
@@ -694,22 +616,9 @@ class PullRequestChangesRepository(
   suspend fun deleteDraft(key: PullRequestKey, id: Long) {
     db.withWriteTransaction {
       dao.deleteDraft(id)
-      val cache = cache(key)
-      saveCache(key, cache.copy(replies = cache.replies - id))
       drafts.delete(pendingEditKey(key, id))
     }
   }
-
-  private fun cacheKey(key: PullRequestKey) =
-    DraftKey(key.accountId, key.repo, key.number, REVIEW_CACHE_SLOT)
-
-  private fun cacheFlow(key: PullRequestKey) =
-    drafts.observe(cacheKey(key)).map(::decodeReviewCache)
-
-  private suspend fun cache(key: PullRequestKey) = decodeReviewCache(drafts.get(cacheKey(key)))
-
-  private suspend fun saveCache(key: PullRequestKey, cache: ReviewCache) =
-    drafts.save(cacheKey(key), cache.encode())
 
   private suspend fun api(key: PullRequestKey): PullRequestReviews {
     val client = clients.client(key.accountId) ?: error("This account is signed out")

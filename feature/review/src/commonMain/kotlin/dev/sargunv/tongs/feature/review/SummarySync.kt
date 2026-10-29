@@ -15,7 +15,10 @@ class SummarySync {
   fun adopt(stored: String?, current: String): String? {
     if (stored == null) return null
     val untouched = current == (synced ?: "")
-    if (untouched || current == stored) synced = stored
+    if (untouched || current == stored) {
+      synced = stored
+      saved = stored
+    }
     return stored.takeIf { untouched && it != current }
   }
 

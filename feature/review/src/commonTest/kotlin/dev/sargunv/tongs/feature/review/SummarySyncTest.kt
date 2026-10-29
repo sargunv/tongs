@@ -33,6 +33,16 @@ class SummarySyncTest {
   }
 
   @Test
+  fun submittedTextCanBeUsedInAnotherReview() {
+    val sync = SummarySync()
+    sync.adopt("", "")
+    assertTrue(sync.shouldSave("Looks good"))
+    sync.adopt("Looks good", "Looks good")
+    assertEquals("", sync.adopt("", "Looks good"))
+    assertTrue(sync.shouldSave("Looks good"))
+  }
+
+  @Test
   fun anEmptyFieldBeforeLoadingSavesNothing() {
     assertFalse(SummarySync().shouldSave(""))
   }

@@ -487,6 +487,83 @@ class PullRequestChangesRepositoryTest {
   }
 
   @Test
+  fun obsoleteViewedMutationsAreRetiredAfterRestart() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    val dao = db.pullRequestChanges()
+    // Both marks and unmarks are tied to the version the reader saw.
+    dao.upsertViewed(
+      listOf(true, false).mapIndexed { i, viewed ->
+        ViewedFileEntity(
+          key.accountId,
+          key.repo.owner,
+          key.repo.name,
+          key.number,
+          a1.path,
+          "old$i",
+          viewed,
+          true,
+          1,
+        )
+      },
+    )
+    forge.remoteViewed = mapOf(a1.path to FileViewedState.Unviewed)
+    repo.syncViewed(key, listOf(a1))
+    advanceUntilIdle()
+    assertTrue(forge.calls.isEmpty())
+    assertTrue(dao.viewed(key.accountId, key.repo.owner, key.repo.name, key.number).isEmpty())
+  }
+
+  @Test
+  fun submittingBeforeAutosaveClearsTheOldSummary() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    repo.setSummary(key, "Old summary")
+    repo.submit(key, ReviewEvent.Comment, "Just typed", "head1")
+    assertEquals("Just typed", forge.submissions.single().body)
+    assertEquals("", repo.summary(key).first())
+    assertFalse(repo.reviewStarted(key).first())
+  }
+
+  @Test
+  fun aRefusedSubmissionSavesTheSummaryBeforeAutosave() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    repo.setSummary(key, "Old summary")
+    forge.refuse = "submit"
+    assertFailsWith<IllegalStateException> {
+      repo.submit(key, ReviewEvent.Comment, "Just typed", "head1")
+    }
+    assertEquals("Just typed", repo.summary(key).first())
+  }
+
+  @Test
+  fun aDraftReplyHasItsTargetInTheSamePersistedRow() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    val id =
+      repo.saveDraft(
+        key,
+        ReviewAnchor("head1", "src/a.kt", DiffSide.New, 4, 4),
+        "Agreed",
+        inReplyTo = "T1",
+      )
+    val row = db.pullRequestChanges().draft(id)!!
+    assertEquals("T1", row.inReplyTo)
+    assertEquals("Agreed", row.body)
+    repo.submit(key, ReviewEvent.Comment, "", "head1")
+    assertEquals(
+      listOf(
+        "start PR_1@head1 []",
+        "reply T1 R_new: Agreed",
+        "submit R_new Comment: ",
+      ),
+      forge.calls,
+    )
+    assertTrue(forge.submissions.isEmpty())
+  }
+
+  @Test
   fun submittingKeepsACommentEditedWhileTheRequestWasInFlight() = dbTest { db ->
     val (repo, key) = repository(db)
     repo.refresh(key)
@@ -527,7 +604,7 @@ class PullRequestChangesRepositoryTest {
   }
 
   @Test
-  fun supplementalReviewStateIsPersistedWithoutADraftBadge() = dbTest { db ->
+  fun reviewMetadataIsPersistedInChangesRowsWithoutADraftBadge() = dbTest { db ->
     val (repo, key) = repository(db)
     forge.pendingReview = PendingReview("R_web", "Unfinished", 1)
     forge.threads = listOf(thread("T1", comment("C1", "Mine", pending = true)))
@@ -536,15 +613,24 @@ class PullRequestChangesRepositoryTest {
     assertTrue(drafts.threadsWithDrafts().first().isEmpty())
     val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 4, 4)
     repo.saveDraft(key, anchor, "Pending reply", inReplyTo = "T1")
-    // Database rows don't gain columns; the supplemental document is in Room too.
-    val cached =
-      decodeReviewCache(
-        drafts.get(DraftKey(key.accountId, key.repo, key.number, REVIEW_CACHE_SLOT)),
-      )
-    assertEquals("R_web", cached.pendingId)
-    assertTrue(cached.permissions.getValue("T1").reply)
-    assertEquals(setOf("C1"), cached.pendingComments)
-    assertEquals("T1", cached.replies.values.single())
+    val dao = db.pullRequestChanges()
+    val overview = dao.overview(key.accountId, key.repo.owner, key.repo.name, key.number)!!
+    assertEquals("R_web", overview.pendingReviewId)
+    assertEquals("Unfinished", overview.pendingReviewBody)
+    assertEquals(1, overview.pendingReviewComments)
+    assertTrue(dao.thread(key.accountId, "T1")!!.viewerCanReply)
+    assertEquals(
+      CommentState.Pending,
+      dao
+        .observeThreadComments(key.accountId, key.repo.owner, key.repo.name, key.number)
+        .first()
+        .single()
+        .state,
+    )
+    assertEquals(
+      "T1",
+      dao.drafts(key.accountId, key.repo.owner, key.repo.name, key.number).single().inReplyTo,
+    )
   }
 
   @Test

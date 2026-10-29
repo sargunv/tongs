@@ -1,9 +1,9 @@
 package dev.sargunv.tongs.core.data
 
+import androidx.room3.ColumnInfo
 import androidx.room3.Dao
 import androidx.room3.Entity
 import androidx.room3.ForeignKey
-import androidx.room3.Ignore
 import androidx.room3.Index
 import androidx.room3.PrimaryKey
 import androidx.room3.Query
@@ -43,9 +43,9 @@ data class PullRequestOverviewEntity(
   val viewerReviewRequested: Boolean,
   val viewerHasPendingReview: Boolean = false,
   /** The viewer's review left pending on the forge, as from the web, if there is one. */
-  @Ignore val pendingReviewId: String? = null,
-  @Ignore val pendingReviewBody: String? = null,
-  @Ignore val pendingReviewComments: Int = 0,
+  val pendingReviewId: String? = null,
+  val pendingReviewBody: String? = null,
+  @ColumnInfo(defaultValue = "0") val pendingReviewComments: Int = 0,
   val syncedAt: Long,
 )
 
@@ -111,7 +111,7 @@ data class DraftCommentEntity(
   val body: String,
   val createdAt: Long,
   val updatedAt: Long,
-  @Ignore val inReplyTo: String? = null,
+  val inReplyTo: String? = null,
 )
 
 /** The pending review's summary, kept as it's typed. */
@@ -169,10 +169,10 @@ data class ChangesThreadEntity(
   val isFileLevel: Boolean,
   /** The forge's order. */
   val position: Int,
-  @Ignore val viewerCanReply: Boolean = false,
-  @Ignore val viewerCanResolve: Boolean = false,
-  @Ignore val viewerCanUnresolve: Boolean = false,
-  @Ignore val resolvedBy: String? = null,
+  @ColumnInfo(defaultValue = "0") val viewerCanReply: Boolean = false,
+  @ColumnInfo(defaultValue = "0") val viewerCanResolve: Boolean = false,
+  @ColumnInfo(defaultValue = "0") val viewerCanUnresolve: Boolean = false,
+  val resolvedBy: String? = null,
 )
 
 @Entity(
@@ -198,7 +198,7 @@ data class ChangesThreadCommentEntity(
   val body: String,
   val createdAt: Long,
   val position: Int,
-  @Ignore val state: CommentState = CommentState.Published,
+  @ColumnInfo(defaultValue = "'Published'") val state: CommentState = CommentState.Published,
 )
 
 /** Where a thread's comment stands. */
@@ -424,9 +424,18 @@ interface PullRequestChangesDao {
   suspend fun thread(accountId: Long, id: String): ChangesThreadEntity?
 
   @Query(
-    "UPDATE changes_thread SET isResolved = :resolved WHERE accountId = :accountId AND id = :id",
+    """
+    UPDATE changes_thread SET isResolved = :resolved, viewerCanResolve = :canResolve,
+      viewerCanUnresolve = :canUnresolve WHERE accountId = :accountId AND id = :id
+    """,
   )
-  suspend fun setThreadResolved(accountId: Long, id: String, resolved: Boolean)
+  suspend fun setThreadResolved(
+    accountId: Long,
+    id: String,
+    resolved: Boolean,
+    canResolve: Boolean,
+    canUnresolve: Boolean,
+  )
 
   @Query(
     """
@@ -441,7 +450,7 @@ interface PullRequestChangesDao {
     SELECT c.* FROM changes_thread_comment c
     JOIN changes_thread t ON t.accountId = c.accountId AND t.id = c.threadId
     WHERE t.accountId = :accountId AND t.owner = :owner AND t.repo = :repo AND t.number = :number
-      AND c.id LIKE 'sending:%'
+      AND c.state = 'Sending'
     """,
   )
   suspend fun sendingComments(
@@ -456,7 +465,8 @@ interface PullRequestChangesDao {
 
   @Query(
     """
-    UPDATE changes_pr SET viewerHasPendingReview = 0
+    UPDATE changes_pr SET viewerHasPendingReview = 0, pendingReviewId = NULL,
+      pendingReviewBody = NULL, pendingReviewComments = 0
     WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
     """,
   )
@@ -465,7 +475,7 @@ interface PullRequestChangesDao {
   @Query(
     """
     DELETE FROM changes_thread_comment
-    WHERE accountId = :accountId AND id IN (:ids) AND threadId IN (
+    WHERE accountId = :accountId AND state = 'Pending' AND threadId IN (
       SELECT id FROM changes_thread
       WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number)
     """,
@@ -475,7 +485,6 @@ interface PullRequestChangesDao {
     owner: String,
     repo: String,
     number: Int,
-    ids: List<String>,
   )
 
   /** Threads left with no comments, as one the forge's pending review started. */

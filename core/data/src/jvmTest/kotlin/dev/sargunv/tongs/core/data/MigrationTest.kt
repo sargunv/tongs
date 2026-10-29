@@ -7,6 +7,9 @@ import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -46,6 +49,69 @@ class MigrationTest {
       for (insert in inserts) connection.execSQL(insert)
     } finally {
       connection.close()
+    }
+  }
+
+  @Test
+  fun reviewColumnsKeepExistingChangesAndDefaultToUnknown() = runTest {
+    val dir = createTempDirectory("tongs-review-migration").toFile()
+    try {
+      val path = dir.resolve("tongs.db").path
+      createAt(
+        path,
+        5,
+        """
+        INSERT INTO account (id, forge, webUrl, apiUrl, userId, login, authMethod, capabilities,
+          missingScopes)
+        VALUES (1, 'GitHub', 'https://github.com', 'https://api.github.com', 'U_1', 'octocat',
+          'ClassicToken', '', '')
+        """,
+        """
+        INSERT INTO changes_pr (accountId, owner, repo, number, nodeId, title, state, headOid,
+          webUrl, viewerDidAuthor, viewerReviewRequested, viewerHasPendingReview, syncedAt)
+        VALUES (1, 'octo', 'hello', 7, 'PR_1', 'Title', 'open', 'head1', '', 0, 0, 0, 1)
+        """,
+        """
+        INSERT INTO changes_draft_comment (id, accountId, owner, repo, number, commitOid, path,
+          side, startSide, startLine, endLine, body, createdAt, updatedAt)
+        VALUES (1, 1, 'octo', 'hello', 7, 'head1', 'a.kt', 'New', 'New', 3, 3, 'Keep me', 1, 1)
+        """,
+        """
+        INSERT INTO changes_thread (accountId, id, owner, repo, number, path, side, line,
+          isResolved, isOutdated, isFileLevel, position)
+        VALUES (1, 'T1', 'octo', 'hello', 7, 'a.kt', 'New', 3, 0, 0, 0, 0)
+        """,
+        """
+        INSERT INTO changes_thread_comment (accountId, id, threadId, body, createdAt, position)
+        VALUES (1, 'C1', 'T1', 'Published', 1, 0)
+        """,
+      )
+      val db = openDatabase(path)
+      try {
+        val dao = db.pullRequestChanges()
+        val overview = dao.overview(1, "octo", "hello", 7)!!
+        assertEquals("head1", overview.headOid)
+        assertNull(overview.pendingReviewId)
+        assertNull(overview.pendingReviewBody)
+        assertEquals(0, overview.pendingReviewComments)
+        val draft = dao.draft(1)!!
+        assertEquals("Keep me", draft.body)
+        assertEquals("head1", draft.commitOid)
+        assertNull(draft.inReplyTo)
+        val thread = dao.thread(1, "T1")!!
+        assertFalse(thread.viewerCanReply)
+        assertFalse(thread.viewerCanResolve)
+        assertFalse(thread.viewerCanUnresolve)
+        assertNull(thread.resolvedBy)
+        assertEquals(
+          CommentState.Published,
+          dao.observeThreadComments(1, "octo", "hello", 7).first().single().state,
+        )
+      } finally {
+        db.close()
+      }
+    } finally {
+      dir.deleteRecursively()
     }
   }
 

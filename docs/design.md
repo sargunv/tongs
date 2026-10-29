@@ -690,10 +690,9 @@ express that, so its adapter will have to narrow such a range.
       unfolded, and in the review pane on desktop. Its `DraftKey` slots autosave
       text, including unsent comments and thread replies; it reserves no diff
       rows. Suggest change prefills the selected new-side lines.
-    - Supplemental review metadata is JSON in an internal Room key/value slot,
-      excluded from draft badges. This keeps schema version 5 unchanged while
-      persisting permissions, pending review identity, pending comment state,
-      and reply targets.
+    - Permissions, pending review identity, comment state, and reply targets are
+      columns on their corresponding `changes_*` rows. Unsent line drafts keep
+      their source commit in their slot alongside the path and lines.
 - **Commenting, modeled on email.**
   - The thread keeps the timeline. Its end has Reply and Quote actions rather
     than an always-open text box, and each comment has "Quote reply".

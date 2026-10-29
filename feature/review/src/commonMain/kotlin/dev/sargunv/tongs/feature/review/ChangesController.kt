@@ -67,15 +67,10 @@ sealed interface ComposerTarget {
     val suggestion: String? = null,
     /** The lines, for a composer that covers the diff. */
     val quoted: List<QuotedLine> = emptyList(),
-    /** The commit an edited draft's lines are numbered against; null for a new comment. */
-    val commitOid: String? = null,
+    /** The commit these lines were selected from, kept with the autosaved draft. */
+    val commitOid: String,
   ) : ComposerTarget {
-    /**
-     * Where the comment goes: on [head], the commit on screen, for a new comment, but an edited
-     * draft keeps the commit it was written against, since its lines are numbered there.
-     */
-    fun anchor(head: String) =
-      ReviewAnchor(commitOid ?: head, path, side, startLine, endLine, startSide)
+    fun anchor() = ReviewAnchor(commitOid, path, side, startLine, endLine, startSide)
 
     override val title: String
       get() {
@@ -86,7 +81,7 @@ sealed interface ComposerTarget {
 
     /** The draft slot for a new comment on these lines. */
     val slot: String
-      get() = "$LINE_SLOT${startSide.code}$startLine-${side.code}$endLine:$path"
+      get() = "$LINE_SLOT$commitOid:${startSide.code}$startLine-${side.code}$endLine:$path"
   }
 
   /** A reply to thread [threadId], or a pending reply being edited. */
@@ -103,7 +98,7 @@ sealed interface ComposerTarget {
   }
 
   companion object {
-    /** Slots of drafts for new line comments: sides and lines, then the path. */
+    /** Slots of drafts for new line comments: source commit, sides and lines, then the path. */
     const val LINE_SLOT = "review/line:"
     /** Slots of drafts for replies: the thread's id follows. */
     const val REPLY_SLOT = "review/reply:"
@@ -113,14 +108,21 @@ sealed interface ComposerTarget {
 
     private fun side(code: Char) = if (code == 'o') DiffSide.Old else DiffSide.New
 
-    private val LineSlot = Regex("""([on])(\d+)-([on])(\d+):(.+)""")
+    private val LineSlot = Regex("""([^:]+):([on])(\d+)-([on])(\d+):(.+)""")
 
     /** The lines a [LINE_SLOT] draft is on, or null if [slot] isn't one. */
     fun parseLineSlot(slot: String): Line? {
       val match =
         LineSlot.matchEntire(slot.removePrefix(LINE_SLOT).takeIf { it != slot } ?: return null)
-      val (startSide, start, side, end, path) = match?.destructured ?: return null
-      return Line(path, side(startSide[0]), start.toInt(), side(side[0]), end.toInt())
+      val (commit, startSide, start, side, end, path) = match?.destructured ?: return null
+      return Line(
+        path,
+        side(startSide[0]),
+        start.toInt(),
+        side(side[0]),
+        end.toInt(),
+        commitOid = commit,
+      )
     }
   }
 }
@@ -572,6 +574,7 @@ class ChangesController(
         last.line,
         suggestion = suggestion,
         quoted = quoted,
+        commitOid = load.loader.value?.newCommit ?: overview?.headOid ?: return,
       )
     // Keep the lines near the top, clear of a keyboard and beside the composer's pane.
     view.scrollToRow((selection.first - 3).coerceAtLeast(0))
@@ -580,13 +583,14 @@ class ChangesController(
   /** Opens an unsent line comment again, where it was left. */
   fun resume(item: InlineItem.Unsent) {
     val t = item.target
+    val current = t.commitOid == (load.loader.value?.newCommit ?: overview?.headOid)
     composer =
       t.copy(
         suggestion =
-          if (t.startSide == DiffSide.New && t.side == DiffSide.New)
+          if (current && t.startSide == DiffSide.New && t.side == DiffSide.New)
             lines(t.path, DiffSide.New, t.startLine, t.endLine)
           else null,
-        quoted = quote(t.path, t.side, t.startLine, t.endLine),
+        quoted = if (current) quote(t.path, t.side, t.startLine, t.endLine) else emptyList(),
       )
   }
 
@@ -655,9 +659,8 @@ class ChangesController(
     if (composer == target) closeComposer()
     when (target) {
       is ComposerTarget.Line -> {
-        val head = load.loader.value?.newCommit ?: overview?.headOid ?: return
         scope.launch {
-          repository.saveDraft(key, target.anchor(head), body, id = target.draftId)
+          repository.saveDraft(key, target.anchor(), body, id = target.draftId)
           draftRepository.delete(draftKey)
         }
       }

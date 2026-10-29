@@ -84,13 +84,13 @@ interface DraftDao {
   @Query(
     """
     SELECT COUNT(*) > 0 FROM draft
-    WHERE accountId = :accountId AND repoOwner = :owner AND repoName = :name AND number = :number AND slot != 'cache/review'
+    WHERE accountId = :accountId AND repoOwner = :owner AND repoName = :name AND number = :number
     """,
   )
   fun observeHasDraft(accountId: Long, owner: String, name: String, number: Int): Flow<Boolean>
 
   @Query(
-    "SELECT DISTINCT accountId, repoOwner, repoName, number FROM draft WHERE slot != 'cache/review'",
+    "SELECT DISTINCT accountId, repoOwner, repoName, number FROM draft",
   )
   fun observeDraftThreads(): Flow<List<DraftThreadRow>>
 

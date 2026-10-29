@@ -688,20 +688,23 @@ express that, so its adapter will have to narrow such a range.
       line and can be reopened. Reply and resolve/unresolve update Room
       optimistically, with a snackbar and rollback on refusal. Replies go into a
       pending review when one is under way, and post directly otherwise.
-    - The pending review lives in Room (`changes_draft_comment`,
-      `changes_draft_review`). New line comments go out as one REST review
-      pinned to their commit; replies and reviews started in another client are
-      built up through GraphQL before submission. Accepted steps are removed
-      locally, so retrying continues the pending review after a partial failure.
-      A review left open elsewhere offers Continue and Discard.
-    - `CommentComposer` uses the shared `Composer`: full screen with the
-      selected lines when folded, in the tree's place beside the diff when
-      unfolded, and in the review pane on desktop. Its `DraftKey` slots autosave
-      text, including unsent comments and thread replies; it reserves no diff
-      rows. Suggest change prefills the selected new-side lines.
-    - Permissions, pending review identity, comment state, and reply targets are
-      columns on their corresponding `changes_*` rows. Unsent line drafts keep
-      their source commit in their slot alongside the path and lines.
+    - Every composer edits one Room `draft` row with a stable ID, a typed
+      destination, and review membership. Line anchors (commit, path, sides and
+      lines) are fixed at creation; replies identify a thread and have no
+      commit. All drafts are listed in the review pane and finish dialog, even
+      when their files leave the diff. Older anchors are labeled outdated;
+      suggestions and quoted code are offered only for the original commit.
+    - New line comments go out as one REST review pinned to their commit;
+      replies and reviews started elsewhere use GraphQL staging. Mixed or
+      unknown line commits block submission. A remote review requires explicit
+      Continue or Discard, including when local text already exists.
+    - `CommentComposer` uses the shared `Composer`: full screen when folded,
+      beside the diff when unfolded, and in the review pane on desktop. Adding
+      or removing a comment changes its membership; editing never makes a copy.
+    - Permissions, remote pending-review identity and comment state remain on
+      the corresponding `changes_*` cache rows. Refreshes replace cached server
+      content while retaining comments confirmed by server ID after that refresh
+      began. A subsequent refresh follows server edits and deletions normally.
 - **Commenting, modeled on email.**
   - The thread keeps the timeline. Its end has Reply and Quote actions rather
     than an always-open text box, and each comment has "Quote reply".
@@ -725,17 +728,17 @@ express that, so its adapter will have to narrow such a range.
       docks beside the thread and the inbox makes way, so the thread stays
       readable while you write; folded it covers the screen. Back closes it, and
       the draft stays.
-    - Drafts live in Room's `draft` table, keyed by account and `DraftKey`
-      (thread plus a slot: `reply`, or e.g. `review/<path>:<line>`). The
-      composer saves 400 ms after typing stops and again when it leaves the
-      screen, deletes the draft when emptied, and adopts changes made elsewhere,
-      so "Quote reply" appends to an open composer. The end of a thread with a
-      draft says Draft instead of Reply, and inbox rows show the draft's start.
-    - Sending is optimistic: the composer closes, the comment shows at once as
-      "Sending…", and the draft is deleted only once GitHub has the comment. If
-      GitHub refuses, the comment disappears, the draft stays, and a snackbar
-      says so. Close and Reopen with comment post the comment first, then change
-      the state, then refetch for GitHub's own event.
+    - Draft fields hydrate before accepting input. Each input or formatting
+      operation queues a write through one app-scoped writer per draft, without
+      a debounce or dispose save. Closing or replacing the composer drops only
+      its field projection; queued writes and quote appends belong to the app.
+    - Submission reserves the drafts synchronously, disabling input and repeated
+      sends before waiting for Room. One transaction reads and marks the rows
+      `submitting`; the app performs network calls outside it, then deletes the
+      rows on success or unlocks them with an error on failure. Dismissal cannot
+      cancel preparation or delivery. At startup, leftover claims become
+      editable with “May have been sent”; they are never replayed automatically.
+      There is no outbox, step receipt journal, or reconciliation engine.
     - The toolbar has bold, italic, strikethrough, heading, code (a fence when
       the selection spans lines), link, quote, lists, task list, and mention;
       Ctrl/⌘ B, I, E, K format, Ctrl/⌘+Enter comments, and Escape closes.

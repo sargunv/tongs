@@ -99,16 +99,17 @@ fun renderThreadScreenshots(
         val key = DraftKey(account, route.repo, route.number!!)
         db
           .drafts()
-          .upsert(
+          .insert(
             DraftEntity(
-              account,
-              key.value,
-              route.repo.owner,
-              route.repo.name,
-              route.number!!,
-              key.slot,
-              DRAFT,
-              0,
+              accountId = account,
+              key = key.value,
+              repoOwner = route.repo.owner,
+              repoName = route.repo.name,
+              number = route.number!!,
+              slot = key.slot,
+              body = DRAFT,
+              updatedAt = 0,
+              destination = dev.sargunv.tongs.core.data.DraftDestination.ThreadReply,
             ),
           )
       }

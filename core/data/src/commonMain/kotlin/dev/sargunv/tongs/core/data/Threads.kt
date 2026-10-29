@@ -113,8 +113,9 @@ class ThreadRepository(
     if (status.value.refreshing) return
     status.update { it.copy(refreshing = true) }
     try {
+      val started = database.withWriteTransaction { confirmationSequence }
       val load = source(ref).load(ref.repo, ref.number)
-      store(ref, load)
+      store(ref, load, started)
       status.update { it.copy(refreshing = false, error = null) }
     } catch (e: CancellationException) {
       status.update { it.copy(refreshing = false) }
@@ -159,69 +160,67 @@ class ThreadRepository(
     }
   }
 
-  /**
-   * Posts [body] as a comment, showing it at once as pending. Then, if [close] or [reopen] is set,
-   * changes the thread's state. [body] is saved as the [draft] first, so a refusal keeps exactly
-   * what was sent; once the forge has the comment, the draft is deleted unless it's been rewritten
-   * since.
-   */
-  suspend fun comment(
+  /** The whole submission belongs to the app, including waiting for Room's writer. */
+  fun comment(
     ref: ThreadRef,
-    body: String,
     close: StateReason? = null,
     reopen: Boolean = false,
-    draft: DraftKey? = ref.replyDraft,
-  ) {
-    draft?.let { drafts.save(it, body) }
-    val thread = stored(ref) ?: return
-    val account = accounts.account(ref.accountId)
-    val localId = LOCAL_ID_PREFIX + Random.nextLong().toULong().toString(16)
-    val pending =
-      TimelineItem.Comment(
-        id = localId,
-        createdAt = clock.now(),
-        author = account?.let { Actor(it.login, it.avatarUrl) },
-        body = body,
-      )
-    if (body.isNotBlank()) {
-      val (accountId, repo, number) = ref
-      val position =
-        dao.maxPosition(accountId, repo.owner, repo.name, number, LOCAL_POSITION, Long.MAX_VALUE)
-      dao.upsertItems(
-        listOf(item(ref, pending, maxOf(position + 1, LOCAL_POSITION), isPending = true)),
-      )
-    }
-    scope.launch {
+  ): kotlinx.coroutines.Deferred<Boolean> =
+    drafts.submit(listOf(ref.replyDraft)) { rows ->
+      val body = rows.single().body
+      val thread = stored(ref) ?: error("The thread hasn't loaded yet")
+      val account = accounts.account(ref.accountId)
+      val localId = LOCAL_ID_PREFIX + Random.nextLong().toULong().toString(16)
+      if (body.isNotBlank()) {
+        val pending =
+          TimelineItem.Comment(
+            localId,
+            clock.now(),
+            account?.let { Actor(it.login, it.avatarUrl) },
+            body,
+          )
+        val position =
+          dao.maxPosition(
+            ref.accountId,
+            ref.repo.owner,
+            ref.repo.name,
+            ref.number,
+            LOCAL_POSITION,
+            Long.MAX_VALUE,
+          )
+        dao.upsertItems(
+          listOf(item(ref, pending, maxOf(position + 1, LOCAL_POSITION), isPending = true)),
+        )
+      }
       try {
         val source = source(ref)
-        if (body.isNotBlank()) {
-          val posted = source.addComment(thread.id, body)
-          confirmComment(ref, localId, posted)
-          draft?.let { drafts.deleteIfUnchanged(it, body) }
-        }
+        if (body.isNotBlank()) confirmComment(ref, localId, source.addComment(thread.id, body))
         when {
           close != null -> setState(ref, thread, ThreadState.Closed, close)
           reopen -> setState(ref, thread, ThreadState.Open, StateReason.Reopened)
         }
-      } catch (e: CancellationException) {
-        throw e
       } catch (e: Exception) {
         dao.deleteItem(ref.accountId, ref.repo.owner, ref.repo.name, ref.number, localId)
-        val what = if (body.isNotBlank()) "post your comment" else "change the state"
-        _failures.tryEmit("Couldn't $what: ${e.message}. Your draft is saved.")
+        _failures.tryEmit("Couldn't post your comment: ${e.message}. Your draft is saved.")
+        throw e
       }
     }
-  }
 
-  /** Closes or reopens without a comment. */
-  suspend fun setState(ref: ThreadRef, close: Boolean, reason: StateReason? = null) =
-    comment(
-      ref,
-      body = "",
-      close = if (close) (reason ?: StateReason.Completed) else null,
-      reopen = !close,
-      draft = null,
-    )
+  /** Closes or reopens without using the reply draft. */
+  suspend fun setState(ref: ThreadRef, close: Boolean, reason: StateReason? = null) {
+    val thread = stored(ref) ?: return
+    scope.launch {
+      runCatching {
+        setState(
+          ref,
+          thread,
+          if (close) ThreadState.Closed else ThreadState.Open,
+          if (close) reason ?: StateReason.Completed else StateReason.Reopened,
+        )
+      }
+        .onFailure { _failures.tryEmit("Couldn't change the state: ${it.message}") }
+    }
+  }
 
   /**
    * Toggles the account's [reaction] on [subjectId]: the thread's body, a comment, or a review.
@@ -290,6 +289,7 @@ class ThreadRepository(
     val (accountId, repo, number) = ref
     database.withWriteTransaction {
       val local = dao.items(accountId, repo.owner, repo.name, number).find { it.id == localId }
+      confirmations[ref to posted.id] = ++confirmationSequence
       dao.deleteItem(accountId, repo.owner, repo.name, number, localId)
       dao.upsertItems(
         listOf(item(ref, posted, local?.position ?: LOCAL_POSITION, isPending = false)),
@@ -376,7 +376,14 @@ class ThreadRepository(
     dao.thread(ref.accountId, ref.repo.owner, ref.repo.name, ref.number)?.let(::decodeDetail)
 
   /** Replaces the stored thread with [load]. Comments still pending stay at the end. */
-  internal suspend fun store(ref: ThreadRef, load: ThreadLoad) {
+  private var confirmationSequence = 0L
+  private val confirmations = HashMap<Pair<ThreadRef, String>, Long>()
+
+  internal suspend fun store(
+    ref: ThreadRef,
+    load: ThreadLoad,
+    started: Long = confirmationSequence,
+  ) {
     val (accountId, repo, number) = ref
     val headIds = load.head.items.map { it.id }.toSet()
     // Short timelines come back whole in both pages; long ones leave a gap between them.
@@ -396,11 +403,17 @@ class ThreadRepository(
           gapCursor = if (gapClosed) null else load.head.endCursor,
         ),
       )
+      val newer =
+        dao.items(accountId, repo.owner, repo.name, number).filter {
+          (confirmations[ref to it.id] ?: 0) > started
+        }
       dao.deleteConfirmedItems(accountId, repo.owner, repo.name, number)
       dao.upsertItems(
         load.head.items.mapIndexed { i, it -> item(ref, it, i.toLong()) } +
           tail.mapIndexed { i, it -> item(ref, it, TAIL_POSITION + i) },
       )
+      val remoteIds = (load.head.items + tail).mapTo(HashSet()) { it.id }
+      dao.upsertItems(newer.filter { it.id !in remoteIds })
       dao.deleteReviewThreads(accountId, repo.owner, repo.name, number)
       dao.upsertReviewThreads(
         load.reviewThreads.map {

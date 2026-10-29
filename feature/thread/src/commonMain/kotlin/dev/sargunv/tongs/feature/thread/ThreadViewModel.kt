@@ -20,7 +20,6 @@ import dev.sargunv.tongs.forge.api.SubjectType
 import dev.zacsweers.metro.Assisted
 import dev.zacsweers.metro.AssistedFactory
 import dev.zacsweers.metro.AssistedInject
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
@@ -119,7 +118,7 @@ class ThreadViewModel(
               threads.observe(ref),
               status,
               // The reply's own draft: line comments drafted in the PR's changes don't count.
-              drafts.observe(ref.replyDraft).map { it != null },
+              drafts.observe(ref.replyDraft).map { !it.isNullOrBlank() },
             ) { snapshot, s, draft ->
               Triple(snapshot, s, draft)
             }
@@ -188,7 +187,6 @@ class ReplyViewModel(
   private val threads: ThreadRepository,
   val drafts: DraftRepository,
   accounts: AccountRepository,
-  private val appScope: CoroutineScope,
 ) : ViewModel() {
   val ref = ThreadRef(route.thread.accountId, route.thread.repo, route.thread.number ?: 0)
 
@@ -200,21 +198,8 @@ class ReplyViewModel(
   }
     .stateIn(viewModelScope, SharingStarted.Eagerly, Instance.GitHubDotCom.webUrl)
 
-  private var sent = false
-
-  /** Saves and queues once per composer, in the app scope so dismissal cannot cancel it. */
-  fun send(body: String, close: Boolean = false, reopen: Boolean = false): Boolean {
-    if (sent) return false
-    sent = true
-    appScope.launch {
-      threads.comment(
-        ref,
-        body,
-        close = if (close) StateReason.Completed else null,
-        reopen = reopen,
-      )
-    }
-    return true
+  fun send(close: Boolean = false, reopen: Boolean = false) {
+    threads.comment(ref, close = if (close) StateReason.Completed else null, reopen = reopen)
   }
 
   @AssistedFactory

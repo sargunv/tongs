@@ -15,8 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.input.TextFieldLineLimits
-import androidx.compose.foundation.text.input.rememberTextFieldState
-import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -30,27 +28,28 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.sargunv.tongs.core.composer.rememberComposerState
+import dev.sargunv.tongs.core.data.DraftDestination
+import dev.sargunv.tongs.core.data.DraftKey
 import dev.sargunv.tongs.core.data.ReviewThreadWithComments
 import dev.sargunv.tongs.core.ui.ActionIcon
 import dev.sargunv.tongs.core.ui.ReviewIcons
 import dev.sargunv.tongs.core.ui.TongsIcons
 import dev.sargunv.tongs.forge.api.ReviewEvent
-import kotlinx.coroutines.flow.debounce
 
 /**
  * Finishing the pending review: a summary, the verdict, and submit. The summary saves as it's
@@ -64,27 +63,18 @@ fun ReviewForm(
   onSubmitted: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  val summary = rememberTextFieldState(controller.summary.orEmpty())
-  val sync = remember { SummarySync() }
-  LaunchedEffect(controller.summary) {
-    sync
-      .adopt(controller.summary, summary.text.toString())
-      ?.let(summary::setTextAndPlaceCursorAtEnd)
-  }
-  LaunchedEffect(summary) {
-    snapshotFlow { summary.text.toString() }
-      .debounce(300)
-      .collect { if (sync.shouldSave(it)) controller.saveSummary(it) }
-  }
+  val state = rememberComposerState(DraftKey.summary(controller.key), controller.draftRepository)
+  val summary = state.text
   val own = controller.overview?.viewerDidAuthor == true
   var event by remember { mutableStateOf(if (own) ReviewEvent.Comment else initialEvent) }
-  var sending by remember { mutableStateOf(false) }
+  val sending = state.submitting
   val pending = controller.pendingCount
   val elsewhere = controller.overview?.pendingReviewComments ?: 0
   val body = summary.text.toString()
   // Forges want words for a comment or a change request that has no line comments.
   val canSend =
-    !sending &&
+    state.editable &&
+      controller.pendingReviewContinued &&
       when (event) {
         ReviewEvent.Approve -> true
         ReviewEvent.Comment,
@@ -100,12 +90,16 @@ fun ReviewForm(
       style = MaterialTheme.typography.labelLarge,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+    if (state.warning) Text("May have been sent. Check the review before sending again.")
+    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     OutlinedTextField(
       state = summary,
+      enabled = state.editable,
+      inputTransformation = state.inputTransformation,
       placeholder = { Text("Leave a summary (optional)") },
       lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 3, maxHeightInLines = 8),
       textStyle = MaterialTheme.typography.bodyMedium,
-      modifier = Modifier.fillMaxWidth(),
+      modifier = Modifier.fillMaxWidth().testTag("review-summary"),
     )
     Column(Modifier.selectableGroup()) {
       for (option in listOf(ReviewEvent.Comment, ReviewEvent.Approve, ReviewEvent.RequestChanges)) {
@@ -157,9 +151,7 @@ fun ReviewForm(
         CircularProgressIndicator(Modifier.size(20.dp).padding(end = 8.dp), strokeWidth = 2.dp)
       Button(
         onClick = {
-          sending = true
-          controller.submit(event, body) { ok ->
-            sending = false
+          controller.submit(event) { ok ->
             // The stored summary is gone now, and the field follows it.
             if (ok) onSubmitted()
           }
@@ -168,6 +160,39 @@ fun ReviewForm(
         modifier = Modifier.fillMaxWidth(),
       ) {
         Text("Submit review")
+      }
+    }
+  }
+}
+
+/** Draft recovery is independent of the current diff, at every window width. */
+@Composable
+private fun DraftList(controller: ChangesController, onEdit: () -> Unit = {}) {
+  for (draft in controller.allDrafts.filter { it.body.isNotEmpty() || it.inReview }) {
+    ListCard(
+      title = controller.draftLabel(draft),
+      body = draft.body,
+      onClick = {
+        controller.editDraft(draft)
+        onEdit()
+      },
+    )
+    Row {
+      TextButton(
+        onClick = {
+          controller.editDraft(draft)
+          onEdit()
+        },
+        enabled = !draft.submitting,
+      ) {
+        Text("Edit")
+      }
+      if (draft.inReview && draft.destination != DraftDestination.Summary)
+        TextButton(onClick = { controller.removeFromReview(draft) }, enabled = !draft.submitting) {
+          Text("Remove from review")
+        }
+      TextButton(onClick = { controller.deleteDraft(draft) }, enabled = !draft.submitting) {
+        Text("Discard")
       }
     }
   }
@@ -183,7 +208,12 @@ fun FinishReviewDialog(
   AlertDialog(
     onDismissRequest = onDismiss,
     title = { Text("Finish your review") },
-    text = { ReviewForm(controller, initialEvent, onSubmitted = onDismiss) },
+    text = {
+      Column(Modifier.verticalScroll(rememberScrollState())) {
+        DraftList(controller, onEdit = onDismiss)
+        ReviewForm(controller, initialEvent, onSubmitted = onDismiss)
+      }
+    },
     confirmButton = {},
     dismissButton = { TextButton(onClick = onDismiss) { Text("Keep reading") } },
   )
@@ -215,19 +245,7 @@ fun ReviewSidePane(
     item(key = "review") {
       Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         PaneHeading("Your review")
-        for (draft in controller.drafts) {
-          val item =
-            controller.items.values.firstOrNull {
-              (it is InlineItem.Draft && it.draft.id == draft.id) ||
-                (it is InlineItem.Thread && it.thread.thread.id == draft.inReplyTo)
-            }
-          val where = "${draft.anchor.path.substringAfterLast('/')}:${draft.anchor.endLine}"
-          ListCard(
-            title = if (draft.inReplyTo != null) "Reply on $where" else where,
-            body = draft.body,
-            onClick = { item?.let(controller::jumpTo) },
-          )
-        }
+        DraftList(controller)
         ReviewForm(controller, ReviewEvent.Comment, onSubmitted = {})
       }
     }
@@ -317,7 +335,7 @@ fun ThreadPane(
 @Composable
 fun PendingReviewBanner(controller: ChangesController, modifier: Modifier = Modifier) {
   val overview = controller.overview ?: return
-  if (overview.pendingReviewId == null || controller.reviewStarted) return
+  if (overview.pendingReviewId == null || controller.pendingReviewContinued) return
   var confirming by remember { mutableStateOf(false) }
   val n = overview.pendingReviewComments
   Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = modifier.fillMaxWidth()) {

@@ -160,7 +160,7 @@ private const val ROW_COLUMNS =
   (t.readElsewhere AND NOT (t.unread OR t.localUnread)) AS readElsewhere,
   (SELECT substr(d.body, 1, 200) FROM draft d
     WHERE d.accountId = t.accountId AND d.repoOwner = t.repoOwner AND d.repoName = t.repoName
-      AND d.number = t.subjectNumber
+      AND d.number = t.subjectNumber AND TRIM(d.body) != ''
     ORDER BY d.updatedAt DESC LIMIT 1) AS draft
   """
 

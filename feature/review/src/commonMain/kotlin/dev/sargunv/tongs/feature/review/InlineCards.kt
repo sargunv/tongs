@@ -43,7 +43,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.sargunv.tongs.core.data.ChangesThreadCommentEntity
 import dev.sargunv.tongs.core.data.CommentState
-import dev.sargunv.tongs.core.data.DraftComment
+import dev.sargunv.tongs.core.data.DraftEntity
 import dev.sargunv.tongs.core.data.ReviewThreadWithComments
 import dev.sargunv.tongs.core.markdown.ForgeMarkdown
 import dev.sargunv.tongs.core.markdown.MarkdownContext
@@ -90,7 +90,6 @@ class CardMetrics(val rowPx: Float, val body: TextStyle, val density: Float) {
           chrome + shown + item.replies.sumOf { comment(it.body) } + rowsOf(40.dp)
         }
       is InlineItem.Draft -> chrome + comment(item.draft.body)
-      is InlineItem.Unsent -> chrome + comment(item.body)
     }
   }
 }
@@ -122,7 +121,6 @@ fun InlineCard(item: InlineItem?, controller: ChangesController, onOpenThread: (
     when (item) {
       is InlineItem.Thread -> ThreadCard(item, controller, onOpenThread)
       is InlineItem.Draft -> DraftCard(item.draft, controller)
-      is InlineItem.Unsent -> UnsentCard(item, controller)
     }
   }
 }
@@ -132,18 +130,18 @@ fun ChangesController.commentRequest(target: ComposerTarget, quote: Boolean) =
   CommentRequest(
     draftKey = draftKey(target),
     drafts = draftRepository,
-    initialBody = target.body,
     title = target.title,
     subtitle = "${key.repo}#${key.number}",
     context =
       when (target) {
         is ComposerTarget.Line -> markdownContext.copy(suggestionBase = target.suggestion)
         is ComposerTarget.Reply -> markdownContext
+        is ComposerTarget.Text -> markdownContext
       },
     suggestion = (target as? ComposerTarget.Line)?.suggestion,
     quoted = if (quote) (target as? ComposerTarget.Line)?.quoted.orEmpty() else emptyList(),
     submitLabel = sendLabel(target),
-    onSubmit = { send(target, it) },
+    onSubmit = { send(target) },
     onClose = ::closeComposer,
   )
 
@@ -366,7 +364,7 @@ private fun CommentHeader(login: String?, avatarUrl: String?, createdAt: Long, t
 
 /** A reply waiting in the pending review, under its thread. */
 @Composable
-private fun PendingReply(draft: DraftComment, controller: ChangesController) {
+private fun PendingReply(draft: DraftEntity, controller: ChangesController) {
   val colors = MaterialTheme.colorScheme
   Surface(color = colors.secondaryContainer, shape = MaterialTheme.shapes.small) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
@@ -382,7 +380,7 @@ private fun PendingReply(draft: DraftComment, controller: ChangesController) {
 }
 
 @Composable
-private fun DraftHeader(title: String, draft: DraftComment, controller: ChangesController) {
+private fun DraftHeader(title: String, draft: DraftEntity, controller: ChangesController) {
   DraftHeader(
     title,
     onEdit = { controller.editDraft(draft) },
@@ -421,46 +419,25 @@ private fun DraftHeader(
 }
 
 @Composable
-private fun DraftCard(draft: DraftComment, controller: ChangesController) {
+private fun DraftCard(draft: DraftEntity, controller: ChangesController) {
   val colors = MaterialTheme.colorScheme
   Card(colors.secondaryContainer, onClick = { controller.editDraft(draft) }) {
     CompositionLocalProvider(LocalContentColor provides colors.onSecondaryContainer) {
       Column {
-        DraftHeader(if (draft.inReplyTo != null) "Pending reply" else "Pending", draft, controller)
-        val a = draft.anchor
+        DraftHeader(controller.draftLabel(draft), draft, controller)
+        val a = checkNotNull(draft.anchor)
         Body(
           draft.body,
           controller.markdownContext.copy(
-            suggestionBase = controller.lines(a.path, a.side, a.startLine, a.endLine),
+            suggestionBase =
+              if (controller.anchorIsCurrent(draft))
+                controller.lines(a.path, a.side, a.startLine, a.endLine)
+              else null,
           ),
           clip = true,
           onOverflow = { controller.editDraft(draft) },
         )
       }
-    }
-  }
-}
-
-/** A line comment closed without adding it to the review, kept like an email draft. */
-@Composable
-private fun UnsentCard(item: InlineItem.Unsent, controller: ChangesController) {
-  val colors = MaterialTheme.colorScheme
-  Card(colors.surfaceContainerHigh, onClick = { controller.resume(item) }) {
-    Column {
-      DraftHeader(
-        "Draft · not in your review yet",
-        onEdit = { controller.resume(item) },
-        onDelete = { controller.discard(item) },
-        deleteLabel = "Discard",
-        editLabel = "Continue",
-      )
-      Text(
-        markdownPreview(item.body),
-        style = MaterialTheme.typography.bodyMedium,
-        color = colors.onSurfaceVariant,
-        maxLines = 3,
-        overflow = TextOverflow.Ellipsis,
-      )
     }
   }
 }

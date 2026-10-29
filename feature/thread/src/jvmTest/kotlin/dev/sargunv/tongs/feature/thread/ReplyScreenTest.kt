@@ -125,7 +125,6 @@ class ReplyScreenTest {
             threads,
             drafts,
             accounts,
-            scope,
           )
         models.put("reply", model)
         setContent {
@@ -170,7 +169,7 @@ class ReplyScreenTest {
         releaseWrite.complete(Unit)
         runBlocking { writer.join() }
         waitUntil { source.comments.isNotEmpty() }
-        // The captured body is saved even though the composer was edited, disposed and cleared.
+        // The accepted draft stays frozen while its editor is dismissed and its model cleared.
         assertEquals("Looks good", runBlocking { drafts.get(ref.replyDraft) })
         source.accept.complete(Unit)
         waitUntil { runBlocking { drafts.get(ref.replyDraft) == null } }

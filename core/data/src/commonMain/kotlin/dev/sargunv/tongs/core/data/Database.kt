@@ -29,8 +29,6 @@ import kotlinx.coroutines.IO
       // PR changes; see PullRequestChangesDao.kt.
       PullRequestOverviewEntity::class,
       ViewedFileEntity::class,
-      DraftCommentEntity::class,
-      DraftReviewEntity::class,
       ChangesThreadEntity::class,
       ChangesThreadCommentEntity::class,
       // The activity feed; see FeedDao.kt.
@@ -39,7 +37,7 @@ import kotlinx.coroutines.IO
       FeedSyncEntity::class,
       FeedMuteEntity::class,
     ],
-  version = 7,
+  version = 8,
   autoMigrations =
     [
       AutoMigration(from = 1, to = 2),
@@ -83,6 +81,7 @@ expect object TongsDatabaseConstructor : RoomDatabaseConstructor<TongsDatabase> 
 /** Opens the database at [path], creating it if needed. */
 fun openDatabase(path: String): TongsDatabase =
   databaseBuilder(path)
+    .addMigrations(DraftsMigration)
     .setDriver(BundledSQLiteDriver())
     .setQueryCoroutineContext(Dispatchers.IO)
     .build()

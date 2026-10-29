@@ -6,7 +6,12 @@ plugins {
 
 kotlin {
   sourceSets {
-    jvmTest.dependencies { implementation(libs.sqlite.bundled) }
+    jvmTest.dependencies {
+      implementation(libs.sqlite.bundled)
+      implementation(compose.desktop.currentOs)
+      implementation(libs.compose.ui.test)
+      implementation(libs.kotlinx.coroutines.swing)
+    }
     commonMain.dependencies {
       api(project(":codeview"))
       // For the spike entry points, which open a PR without an account.

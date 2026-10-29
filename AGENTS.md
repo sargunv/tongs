@@ -55,13 +55,14 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   undo (`InboxRepository`), filters in GitHub's vocabulary (`InboxQuery`), saved
   views (`InboxViewRepository`), threads cached as JSON documents with
   optimistic comments, reactions, and state changes (`ThreadRepository`), drafts
-  for every composer (`DraftRepository`, keyed by `DraftKey`), the PR changes
+  for every composer (`DraftRepository`: typed destinations, fixed anchors,
+  review membership, app-owned writers and submission claims), the PR changes
   screen's store (`PullRequestChangesRepository`: viewed files keyed by path and
-  blob, the pending review's drafts, review threads; tables prefixed
-  `changes_`), accounts and per-account forge clients, settings in DataStore,
-  and `FeedSync` and `FeedRepository` (conditional activity polling, hydration,
-  local mutes and burst aggregation), and `TokenStore` implementations (Android
-  Keystore; desktop OS keychain with a private-file fallback)
+  blob, review threads; tables prefixed `changes_`), accounts and per-account
+  forge clients, settings in DataStore, and `FeedSync` and `FeedRepository`
+  (conditional activity polling, hydration, local mutes and burst aggregation),
+  and `TokenStore` implementations (Android Keystore; desktop OS keychain with a
+  private-file fallback)
 - `core/ui`: the design system: `TongsTheme` (Material 3 Expressive), density
   per platform, `TongsIcons` (Material Symbols), `ListRow`, `SwipeActionsBox`,
   `stateColors()` (open, merged, closed, and checks, harmonized with the theme),
@@ -72,7 +73,7 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   fences highlighted by the engine), and `ProvideForgeLinks`, which opens issue
   and PR links in the app
 - `core/composer`: the reusable Markdown `Composer` (toolbar, preview, actions)
-  and `rememberComposerState`, which autosaves to a `DraftKey`
+  and `rememberComposerState`, which writes through to one typed draft
 - `core/navigation`: the sealed `Route` hierarchy, `Navigator` (`open` for the
   list's picks, `push` for links), and `RouteEntries`, the seam through which
   each feature adds its screens. `Pane.Extra` puts a screen beside a detail, as

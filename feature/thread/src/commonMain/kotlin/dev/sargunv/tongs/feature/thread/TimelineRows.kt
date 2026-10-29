@@ -9,6 +9,7 @@ import dev.sargunv.tongs.forge.api.Actor
 import dev.sargunv.tongs.forge.api.EventKind
 import dev.sargunv.tongs.forge.api.Label
 import dev.sargunv.tongs.forge.api.RepoRef
+import dev.sargunv.tongs.forge.api.ReviewState
 import dev.sargunv.tongs.forge.api.ReviewThread
 import dev.sargunv.tongs.forge.api.StateReason
 import dev.sargunv.tongs.forge.api.ThreadKind
@@ -37,9 +38,12 @@ internal sealed interface TimelineRow {
     override val key
       get() = review.id
 
-    /** A review with no body that started no threads only replied in other reviews' threads. */
+    /**
+     * A comment review with no body that started no threads only replied in other reviews' threads.
+     * Any other state is a verdict, which shows even with no body.
+     */
     val isReplyOnly
-      get() = review.body.isBlank() && threads.isEmpty()
+      get() = review.state == ReviewState.Commented && review.body.isBlank() && threads.isEmpty()
   }
 
   data class Commits(val commits: List<TimelineItem.Commit>) : TimelineRow {

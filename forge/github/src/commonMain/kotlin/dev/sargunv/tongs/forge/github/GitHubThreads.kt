@@ -43,6 +43,7 @@ import dev.sargunv.tongs.forge.github.graphql.ThreadQuery
 import dev.sargunv.tongs.forge.github.graphql.ThreadRemoveReactionMutation
 import dev.sargunv.tongs.forge.github.graphql.ThreadReopenIssueMutation
 import dev.sargunv.tongs.forge.github.graphql.ThreadReopenPullRequestMutation
+import dev.sargunv.tongs.forge.github.graphql.ThreadReviewThreadsQuery
 import dev.sargunv.tongs.forge.github.graphql.ThreadTimelineQuery
 import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadActor
 import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadAssigned
@@ -80,6 +81,7 @@ import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadReviewDismissed
 import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadReviewRequestRemoved
 import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadReviewRequested
 import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadReviewThread
+import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadReviewThreadsPage
 import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadReviewer
 import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadUnassigned
 import dev.sargunv.tongs.forge.github.graphql.fragment.ThreadUnlabeled
@@ -103,7 +105,7 @@ class GitHubGraphQLException(message: String, val type: String? = null, cause: T
 
 /**
  * Issue and PR conversations over GitHub's GraphQL API. One [load] is one request (1 point of rate
- * limit), plus one per 100 files for a PR's viewed count.
+ * limit), plus pages for older review threads and the PR's viewed file count.
  */
 internal class GitHubThreads(http: HttpClient, instance: Instance, token: String) : ThreadSource {
   private val apollo = gitHubApollo(http, instance, token)
@@ -158,11 +160,40 @@ internal class GitHubThreads(http: HttpClient, instance: Instance, token: String
         head = head.toPage(),
         tail = pr.tail.threadPullRequestTimeline.toPage(),
         timelineCount = head.filteredCount,
-        reviewThreads =
-          pr.reviewThreads.nodes.orEmpty().mapNotNull { it?.threadReviewThread?.toReviewThread() },
+        reviewThreads = reviewThreads(repo, number, pr.reviewThreads.threadReviewThreadsPage),
       )
     }
     throw GitHubGraphQLException("$what is a ${thread.__typename}, not an issue or PR")
+  }
+
+  private suspend fun reviewThreads(
+    repo: RepoRef,
+    number: Int,
+    initial: ThreadReviewThreadsPage,
+  ): List<ReviewThread> {
+    var page = initial
+    val pages = mutableListOf(initial)
+    val cursors = mutableSetOf<String>()
+    while (page.pageInfo.hasPreviousPage) {
+      val cursor = page.pageInfo.startCursor
+      if (cursor == null || !cursors.add(cursor)) {
+        throw GitHubGraphQLException("Couldn't load review threads: GitHub sent no earlier cursor")
+      }
+      page =
+        apollo
+          .query(ThreadReviewThreadsQuery(repo.owner, repo.name, number, cursor))
+          .fetch("load review threads of $repo#$number") { it.repository?.pullRequest != null }
+          .repository!!
+          .pullRequest!!
+          .reviewThreads
+          .threadReviewThreadsPage
+      pages += page
+    }
+    return pages
+      .asReversed()
+      .flatMap { it.nodes.orEmpty() }
+      .mapNotNull { it?.threadReviewThread?.toReviewThread() }
+      .distinctBy { it.id }
   }
 
   override suspend fun loadTimeline(

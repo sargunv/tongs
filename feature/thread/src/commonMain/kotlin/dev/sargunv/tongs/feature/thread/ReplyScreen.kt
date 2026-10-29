@@ -29,8 +29,7 @@ fun ReplyScreen(viewModel: ReplyViewModel, onClose: () -> Unit) {
     webUrl = webUrl,
     onSend = { body, close, reopen ->
       state.markSent()
-      viewModel.send(body, close, reopen)
-      onClose()
+      if (viewModel.send(body, close, reopen)) onClose()
     },
     onClose = onClose,
   )

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.verticalScroll
@@ -32,7 +33,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -40,7 +40,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -59,102 +58,73 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.sargunv.tongs.core.data.DraftKey
 import dev.sargunv.tongs.core.data.DraftRepository
+import dev.sargunv.tongs.core.data.DraftWriter
 import dev.sargunv.tongs.core.markdown.ForgeMarkdown
 import dev.sargunv.tongs.core.markdown.MarkdownContext
 import dev.sargunv.tongs.core.ui.ActionIcon
 import dev.sargunv.tongs.core.ui.ConversationIcons
 import dev.sargunv.tongs.core.ui.TongsIcons
 import dev.sargunv.tongs.core.ui.isDesktop
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-/**
- * A composer's text and mode. Its text autosaves to the draft at [draftKey] as you type, and once
- * more when the composer leaves the screen, so closing it, switching apps, or a crash keeps your
- * words, like an email draft.
- */
+/** A field projection of the draft's app-owned writer. IME selection and preview stay local. */
 @Stable
-class ComposerState
-internal constructor(val draftKey: DraftKey, private val drafts: DraftRepository?) {
+class ComposerState internal constructor(val draftKey: DraftKey, private val writer: DraftWriter?) {
   val text = TextFieldState()
-
-  /** Showing the rendered Markdown instead of the editor. */
   var preview by mutableStateOf(false)
-
-  /** False until the saved draft has loaded, so typing can't race it. */
   var ready by mutableStateOf(false)
     internal set
 
-  private var sent = false
+  var submitting by mutableStateOf(false)
+    internal set
 
-  /** The draft as last loaded or saved, to tell our own saves from changes made elsewhere. */
-  private var synced: String? = null
+  var warning by mutableStateOf(false)
+    internal set
+
+  var error by mutableStateOf<String?>(null)
+    internal set
+
+  val editable: Boolean
+    get() = ready && !submitting && writer?.locked?.value != true
 
   val isBlank: Boolean
     get() = text.text.isBlank()
 
-  /**
-   * Stops autosaving. Call it when handing the text to whatever sends it: from then on the sender
-   * owns the draft, deleting it once the forge has the text, or keeping it if the forge refuses.
-   */
-  fun markSent() {
-    sent = true
+  val inputTransformation = InputTransformation {
+    if (!write(asCharSequence().toString())) revertAllChanges()
   }
 
-  internal suspend fun load(initialText: String) {
-    val saved = drafts?.get(draftKey)
-    synced = saved
-    text.setTextAndPlaceCursorAtEnd(saved ?: initialText)
-    ready = true
+  /** Programmatic edits (toolbar and suggestions) use the same write-through path as typing. */
+  fun replaceText(body: String) {
+    if (write(body)) text.setTextAndPlaceCursorAtEnd(body)
   }
 
-  internal suspend fun save() {
-    if (!ready || sent) return
-    val current = text.text.toString()
-    synced = current.ifBlank { null }
-    drafts?.save(draftKey, current)
-  }
-
-  /** Takes a draft changed elsewhere, as when a quote is appended while this is open. */
-  internal fun adopt(stored: String?) {
-    if (!ready || sent || stored == synced || stored == null) return
-    synced = stored
-    text.setTextAndPlaceCursorAtEnd(stored)
-    preview = false
-  }
-
-  internal fun saveSoon() {
-    if (ready && !sent) drafts?.saveSoon(draftKey, text.text.toString())
-  }
+  internal fun write(body: String): Boolean = editable && writer?.write(body) != false
 }
 
-/**
- * A composer for [draftKey]: its saved draft if there is one, otherwise [initialText]. To quote
- * into an existing draft, append to it with [DraftRepository.append] before showing the composer.
- */
-@OptIn(FlowPreview::class)
+/** Hydrates before input; every edit is queued immediately and survives closing the view. */
 @Composable
-fun rememberComposerState(
-  draftKey: DraftKey,
-  drafts: DraftRepository,
-  initialText: String = "",
-): ComposerState {
-  val state = remember(draftKey) { ComposerState(draftKey, drafts) }
-  LaunchedEffect(state) {
-    state.load(initialText)
-    launch { drafts.observe(draftKey).collect(state::adopt) }
-    snapshotFlow { state.text.text.toString() }.drop(1).debounce(400).collect { state.save() }
+fun rememberComposerState(draftKey: DraftKey, drafts: DraftRepository): ComposerState {
+  val writer = remember(draftKey, drafts) { drafts.writer(draftKey) }
+  val state = remember(writer) { ComposerState(draftKey, writer) }
+  LaunchedEffect(writer) {
+    writer.ready.first { it }
+    state.text.setTextAndPlaceCursorAtEnd(writer.body.value)
+    state.ready = true
+    launch {
+      writer.body.collect {
+        if (state.text.text.toString() != it) state.text.setTextAndPlaceCursorAtEnd(it)
+      }
+    }
+    launch { writer.locked.collect { state.submitting = it } }
+    launch { writer.warning.collect { state.warning = it } }
+    launch { writer.error.collect { state.error = it } }
   }
-  DisposableEffect(state) { onDispose { state.saveSoon() } }
   return state
 }
 
-/**
- * A composer that saves nothing, starting with [text]: for previews and screenshot tests. Its
- * [ComposerState.draftKey] is only a label.
- */
+/** An unpersisted field for previews and screenshot tests. */
 @Composable
 fun rememberPreviewComposerState(text: String, draftKey: DraftKey): ComposerState {
   val state = remember(draftKey) { ComposerState(draftKey, null) }
@@ -168,8 +138,7 @@ fun rememberPreviewComposerState(text: String, draftKey: DraftKey): ComposerStat
 /** A button along the composer's bottom edge. */
 data class ComposerAction(
   val label: String,
-  /** The text, trimmed. Call [ComposerState.markSent] if this sends it. */
-  val onClick: (String) -> Unit,
+  val onClick: () -> Unit,
   val icon: ImageVector? = null,
   /** The main action, like Comment: filled, rightmost, and on Ctrl/⌘+Enter. */
   val primary: Boolean = false,
@@ -209,8 +178,8 @@ fun Composer(
   val currentActions by rememberUpdatedState(actions)
   fun run(action: ComposerAction) {
     val body = state.text.text.toString().trim()
-    if (!action.enabled || (!action.allowsEmpty && body.isEmpty())) return
-    action.onClick(body)
+    if (!state.editable || !action.enabled || (!action.allowsEmpty && body.isEmpty())) return
+    action.onClick()
   }
   Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier.fillMaxSize()) {
     BoxWithConstraints {
@@ -223,12 +192,20 @@ fun Composer(
             event.key == Key.Escape -> onClose().let { true }
             command && event.key == Key.Enter ->
               currentActions.firstOrNull { it.primary }?.let(::run).let { true }
-            command && !state.preview -> format(state, event.key)
+            command && !state.preview && state.editable -> format(state, event.key)
             else -> false
           }
         },
       ) {
         Header(state, title, subtitle, onClose)
+        if (state.warning)
+          Text(
+            "May have been sent. Check the thread before sending again.",
+            Modifier.padding(16.dp),
+          )
+        state.error?.let {
+          Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         if (subject != null) {
           Box(Modifier.fillMaxWidth().heightIn(max = third).verticalScroll(rememberScrollState())) {
@@ -268,7 +245,7 @@ private fun Header(state: ComposerState, title: String, subtitle: String?, onClo
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
       )
-      val saved = if (state.isBlank) null else "Draft saved"
+      val saved = if (state.isBlank) null else "Draft"
       val line = listOfNotNull(subtitle, saved).joinToString(" · ")
       if (line.isNotEmpty()) {
         Text(
@@ -301,7 +278,8 @@ private fun Editor(state: ComposerState, placeholder: String, focus: FocusReques
   val style = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface)
   BasicTextField(
     state = state.text,
-    enabled = state.ready,
+    enabled = state.editable,
+    inputTransformation = state.inputTransformation,
     textStyle = style,
     cursorBrush = SolidColor(colors.primary),
     modifier = Modifier.fillMaxSize().focusRequester(focus).testTag("composer-body"),
@@ -357,8 +335,10 @@ private val formats =
   )
 
 private fun apply(state: ComposerState, format: (TextEdit) -> TextEdit) {
+  if (!state.editable) return
   val current = TextEdit(state.text.text.toString(), state.text.selection)
   val result = format(current)
+  if (!state.write(result.text)) return
   state.text.edit {
     replace(0, length, result.text)
     selection = result.selection
@@ -414,7 +394,7 @@ private fun ActionBar(
     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
   ) {
     for (action in actions.sortedBy { it.primary }) {
-      val enabled = state.ready && action.enabled && (action.allowsEmpty || !blank)
+      val enabled = state.editable && action.enabled && (action.allowsEmpty || !blank)
       val content: @Composable () -> Unit = {
         if (action.icon != null) {
           Icon(action.icon, null, Modifier.size(ButtonDefaults.IconSize))

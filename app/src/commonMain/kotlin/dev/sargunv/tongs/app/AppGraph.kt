@@ -2,6 +2,7 @@ package dev.sargunv.tongs.app
 
 import dev.sargunv.tongs.core.data.AccountRepository
 import dev.sargunv.tongs.core.data.AppEnvironment
+import dev.sargunv.tongs.core.data.DraftRepository
 import dev.sargunv.tongs.core.data.FeedSync
 import dev.sargunv.tongs.core.data.InboxRepository
 import dev.sargunv.tongs.core.data.InboxSync
@@ -24,6 +25,7 @@ import io.ktor.client.HttpClient
 interface AppGraph {
   val routeEntries: Set<RouteEntries>
   val accounts: AccountRepository
+  val drafts: DraftRepository
   val inbox: InboxRepository
   val inboxSync: InboxSync
   val feedSync: FeedSync

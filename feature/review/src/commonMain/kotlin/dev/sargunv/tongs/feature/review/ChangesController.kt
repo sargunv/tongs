@@ -8,7 +8,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import dev.sargunv.tongs.codeview.CodeViewState
 import dev.sargunv.tongs.codeview.LineSelection
-import dev.sargunv.tongs.core.data.DraftComment
+import dev.sargunv.tongs.core.data.DraftDestination
+import dev.sargunv.tongs.core.data.DraftEntity
 import dev.sargunv.tongs.core.data.DraftKey
 import dev.sargunv.tongs.core.data.DraftRepository
 import dev.sargunv.tongs.core.data.FileVersion
@@ -16,6 +17,7 @@ import dev.sargunv.tongs.core.data.PullRequestChangesRepository
 import dev.sargunv.tongs.core.data.PullRequestKey
 import dev.sargunv.tongs.core.data.PullRequestOverviewEntity
 import dev.sargunv.tongs.core.data.ReviewThreadWithComments
+import dev.sargunv.tongs.core.data.isDeliverableReviewComment
 import dev.sargunv.tongs.core.markdown.MarkdownContext
 import dev.sargunv.tongs.engine.DiffSide
 import dev.sargunv.tongs.engine.FileClass
@@ -51,8 +53,7 @@ sealed interface ComposerTarget {
   val title: String
   /** The pending review comment being edited, or 0 for a new one. */
   val draftId: Long
-  /** The text to start from when there's no draft: the pending comment's, or nothing. */
-  val body: String
+  val key: DraftKey?
 
   /** A comment on lines picked in the gutter, or a pending one being edited. */
   data class Line(
@@ -62,7 +63,7 @@ sealed interface ComposerTarget {
     val side: DiffSide,
     val endLine: Int,
     override val draftId: Long = 0,
-    override val body: String = "",
+    override val key: DraftKey? = null,
     /** The lines as they are, if they're all on the new side, for "Suggest change". */
     val suggestion: String? = null,
     /** The lines, for a composer that covers the diff. */
@@ -89,13 +90,17 @@ sealed interface ComposerTarget {
     val threadId: String,
     val path: String,
     override val draftId: Long = 0,
-    override val body: String = "",
-    /** An edited pending reply's anchor, which it keeps. */
-    val anchor: ReviewAnchor? = null,
+    override val key: DraftKey? = null,
   ) : ComposerTarget {
     override val title: String
       get() = "Reply on ${path.substringAfterLast('/')}"
   }
+
+  data class Text(
+    override val key: DraftKey,
+    override val title: String,
+    override val draftId: Long,
+  ) : ComposerTarget
 
   companion object {
     /** Slots of drafts for new line comments: source commit, sides and lines, then the path. */
@@ -105,25 +110,6 @@ sealed interface ComposerTarget {
 
     private val DiffSide.code
       get() = if (this == DiffSide.Old) 'o' else 'n'
-
-    private fun side(code: Char) = if (code == 'o') DiffSide.Old else DiffSide.New
-
-    private val LineSlot = Regex("""([^:]+):([on])(\d+)-([on])(\d+):(.+)""")
-
-    /** The lines a [LINE_SLOT] draft is on, or null if [slot] isn't one. */
-    fun parseLineSlot(slot: String): Line? {
-      val match =
-        LineSlot.matchEntire(slot.removePrefix(LINE_SLOT).takeIf { it != slot } ?: return null)
-      val (commit, startSide, start, side, end, path) = match?.destructured ?: return null
-      return Line(
-        path,
-        side(startSide[0]),
-        start.toInt(),
-        side(side[0]),
-        end.toInt(),
-        commitOid = commit,
-      )
-    }
   }
 }
 
@@ -149,7 +135,7 @@ sealed interface InlineItem {
     override val id: Int,
     val thread: ReviewThreadWithComments,
     val folded: Boolean,
-    val replies: List<DraftComment>,
+    val replies: List<DraftEntity>,
     val replyDrafted: Boolean,
   ) : InlineItem {
     override val path = thread.thread.path
@@ -166,24 +152,11 @@ sealed interface InlineItem {
       )
   }
 
-  class Draft(override val id: Int, val draft: DraftComment) : InlineItem {
-    override val path = draft.anchor.path
-    override val side = draft.anchor.side
-    override val line = draft.anchor.endLine
+  class Draft(override val id: Int, val draft: DraftEntity) : InlineItem {
+    override val path = draft.path
+    override val side = DiffSide.valueOf(draft.side)
+    override val line = draft.endLine
     override val signature: Any = draft.body to draft.inReplyTo
-  }
-
-  /** A line comment written and closed without adding it to the review: an email-style draft. */
-  class Unsent(
-    override val id: Int,
-    val target: ComposerTarget.Line,
-    val slot: String,
-    val body: String,
-  ) : InlineItem {
-    override val path = target.path
-    override val side = target.side
-    override val line = target.endLine
-    override val signature: Any = body
   }
 }
 
@@ -229,23 +202,25 @@ class ChangesController(
   var threads by mutableStateOf<List<ReviewThreadWithComments>>(emptyList())
     private set
 
-  var drafts by mutableStateOf<List<DraftComment>>(emptyList())
-    private set
-
-  /** The pending review's summary as stored; null until it has loaded. */
-  var summary by mutableStateOf<String?>(null)
-    private set
+  val drafts: List<DraftEntity>
+    get() = allDrafts.filter {
+      (it.body.isNotBlank() || it.inReview) &&
+        (it.destination == DraftDestination.LineComment ||
+          it.destination == DraftDestination.ReviewReply)
+    }
 
   /** The comment being written, if any. */
   var composer by mutableStateOf<ComposerTarget?>(null)
     private set
 
-  /** Whether a review is under way here; see [PullRequestChangesRepository.reviewStarted]. */
-  var reviewStarted by mutableStateOf(false)
+  val reviewStarted: Boolean
+    get() = allDrafts.any { it.inReview }
+
+  var pendingReviewContinued by mutableStateOf(false)
     private set
 
-  /** Unsent drafts in this PR's review slots, by slot. */
-  private var slots by mutableStateOf<Map<String, String>>(emptyMap())
+  var allDrafts by mutableStateOf<List<DraftEntity>>(emptyList())
+    private set
 
   /**
    * How many rows each inline card takes before it's drawn: an estimate from its text at the diff's
@@ -281,8 +256,6 @@ class ChangesController(
   private var indexOfPath: Map<String, Int> = emptyMap()
   private val threadIds = HashMap<String, Int>()
   private var nextThreadId = 1_000
-  private val unsentIds = HashMap<String, Int>()
-  private var nextUnsentId = UNSENT_IDS
 
   private var latest: ReviewSnapshot? = null
   private var shown: ReviewSnapshot? = null
@@ -297,11 +270,9 @@ class ChangesController(
     scope.launch { repository.overview(key).collect { overview = it } }
     scope.launch { repository.viewed(key).collect { viewed = it } }
     scope.launch { repository.threads(key).collect { threads = it } }
-    scope.launch { repository.drafts(key).collect { drafts = it } }
-    scope.launch { repository.summary(key).collect { summary = it } }
-    scope.launch { repository.reviewStarted(key).collect { reviewStarted = it } }
+    scope.launch { repository.pendingReviewContinued(key).collect { pendingReviewContinued = it } }
     scope.launch {
-      draftRepository.slots(key.accountId, key.repo, key.number, SLOT_PREFIX).collect { slots = it }
+      draftRepository.all(key).collect { allDrafts = it }
     }
     scope.launch { repository.failures.collect { _messages.emit(it) } }
     scope.launch {
@@ -370,10 +341,8 @@ class ChangesController(
     val list = mutableListOf<InlineItem>()
     val (replies, lines) = drafts.partition { it.inReplyTo != null }
     val repliesTo = replies.groupBy { it.inReplyTo }
-    val threadIdsShown = HashSet<String>()
     for (thread in threads) {
       val threadId = thread.thread.id
-      threadIdsShown += threadId
       val id = threadIds.getOrPut(threadId) { nextThreadId++ }
       val folded = thread.thread.isResolved && threadId !in unfoldedThreads
       list +=
@@ -382,21 +351,11 @@ class ChangesController(
           thread,
           folded,
           repliesTo[threadId].orEmpty(),
-          replyDrafted = "${ComposerTarget.REPLY_SLOT}$threadId" in slots,
+          replyDrafted = replyDrafted(threadId),
         )
     }
-    for (draft in lines) list += InlineItem.Draft(DRAFT_IDS + draft.id.toInt(), draft)
-    // A reply whose thread is gone shows where the thread was.
-    for (draft in replies) {
-      if (draft.inReplyTo !in threadIdsShown)
-        list += InlineItem.Draft(DRAFT_IDS + draft.id.toInt(), draft)
-    }
-    val writing = (composer as? ComposerTarget.Line)?.takeIf { it.draftId == 0L }?.slot
-    for ((slot, body) in slots) {
-      if (slot == writing) continue
-      val target = ComposerTarget.parseLineSlot(slot) ?: continue
-      list += InlineItem.Unsent(unsentIds.getOrPut(slot) { nextUnsentId++ }, target, slot, body)
-    }
+    for (draft in lines.filter { it.anchor != null }) list +=
+      InlineItem.Draft(DRAFT_IDS + draft.id.toInt(), draft)
     return list
   }
 
@@ -540,11 +499,13 @@ class ChangesController(
 
   /** Whether the reader's comments go into a review rather than out at once. */
   val inReview: Boolean
-    get() = reviewStarted || drafts.isNotEmpty() || overview?.pendingReviewId != null
+    get() = reviewStarted || drafts.any { it.inReview } || overview?.pendingReviewId != null
 
   /** Comments in the review: drafted here, and in a review left pending on the forge. */
   val pendingCount: Int
-    get() = drafts.size + (overview?.pendingReviewComments ?: 0)
+    get() =
+      drafts.count { isDeliverableReviewComment(it.destination, it.inReview, it.body) } +
+        (overview?.pendingReviewComments ?: 0)
 
   /** Starts a comment on lines picked in the gutter. */
   fun startComment(selection: LineSelection) {
@@ -580,33 +541,33 @@ class ChangesController(
     view.scrollToRow((selection.first - 3).coerceAtLeast(0))
   }
 
-  /** Opens an unsent line comment again, where it was left. */
-  fun resume(item: InlineItem.Unsent) {
-    val t = item.target
-    val current = t.commitOid == (load.loader.value?.newCommit ?: overview?.headOid)
-    composer =
-      t.copy(
-        suggestion =
-          if (current && t.startSide == DiffSide.New && t.side == DiffSide.New)
-            lines(t.path, DiffSide.New, t.startLine, t.endLine)
-          else null,
-        quoted = if (current) quote(t.path, t.side, t.startLine, t.endLine) else emptyList(),
-      )
-  }
-
-  fun discard(item: InlineItem.Unsent) {
-    scope.launch {
-      draftRepository.delete(DraftKey(key.accountId, key.repo, key.number, item.slot))
+  fun editDraft(draft: DraftEntity) {
+    if (
+      draft.destination == DraftDestination.ThreadReply ||
+        draft.destination == DraftDestination.Summary ||
+        (draft.destination == DraftDestination.LineComment && draft.anchor == null)
+    ) {
+      composer =
+        ComposerTarget.Text(
+          draft.draftKey,
+          draftLabel(draft),
+          draft.id,
+        )
+      return
     }
-  }
-
-  fun editDraft(draft: DraftComment) {
     val a = draft.anchor
+    val current = anchorIsCurrent(draft)
     val thread = draft.inReplyTo
     composer =
       if (thread != null) {
-        ComposerTarget.Reply(thread, a.path, draft.id, draft.body, anchor = a)
+        ComposerTarget.Reply(
+          thread,
+          threads.firstOrNull { it.thread.id == thread }?.thread?.path.orEmpty(),
+          draft.id,
+          key = draft.draftKey,
+        )
       } else {
+        checkNotNull(a)
         ComposerTarget.Line(
           a.path,
           a.startSide,
@@ -614,34 +575,80 @@ class ChangesController(
           a.side,
           a.endLine,
           draft.id,
-          draft.body,
+          key = draft.draftKey,
           suggestion =
-            if (a.startSide == DiffSide.New && a.side == DiffSide.New)
+            if (current && a.startSide == DiffSide.New && a.side == DiffSide.New)
               lines(a.path, a.side, a.startLine, a.endLine)
             else null,
-          quoted = quote(a.path, a.side, a.startLine, a.endLine),
+          quoted = if (current) quote(a.path, a.side, a.startLine, a.endLine) else emptyList(),
           commitOid = a.commitOid,
         )
       }
   }
 
   /** Whether a reply to thread [threadId] is drafted and not sent. */
-  fun replyDrafted(threadId: String): Boolean = "${ComposerTarget.REPLY_SLOT}$threadId" in slots
+  fun replyDrafted(threadId: String): Boolean = drafts.any {
+    it.inReplyTo == threadId && it.body.isNotBlank()
+  }
 
   /** Starts a reply to [thread], or opens the one drafted. */
   fun startReply(thread: ReviewThreadWithComments) {
-    composer = ComposerTarget.Reply(thread.thread.id, thread.thread.path)
+    val saved = drafts.firstOrNull { it.inReplyTo == thread.thread.id }
+    if (saved != null) editDraft(saved)
+    else composer = ComposerTarget.Reply(thread.thread.id, thread.thread.path)
   }
 
-  /** Where the composer's text autosaves while it's open. */
+  /** The destination is persisted on first editing and never reconstructed at submission. */
   fun draftKey(target: ComposerTarget): DraftKey {
-    if (target.draftId != 0L) return repository.pendingEditKey(key, target.draftId)
-    val slot =
-      when (target) {
-        is ComposerTarget.Line -> target.slot
-        is ComposerTarget.Reply -> "${ComposerTarget.REPLY_SLOT}${target.threadId}"
+    target.key?.let {
+      return it
+    }
+    return when (target) {
+      is ComposerTarget.Line ->
+        DraftKey(
+          key.accountId,
+          key.repo,
+          key.number,
+          target.slot,
+          DraftDestination.LineComment,
+          target.anchor(),
+        )
+      is ComposerTarget.Reply ->
+        DraftKey(
+          key.accountId,
+          key.repo,
+          key.number,
+          "${ComposerTarget.REPLY_SLOT}${target.threadId}",
+          DraftDestination.ReviewReply,
+          threadId = target.threadId,
+        )
+      is ComposerTarget.Text -> target.key
+    }
+  }
+
+  fun anchorIsCurrent(draft: DraftEntity): Boolean =
+    draft.commitOid != null &&
+      draft.commitOid == (load.loader.value?.newCommit ?: overview?.headOid)
+
+  fun draftLabel(draft: DraftEntity): String {
+    val where =
+      when (draft.destination) {
+        DraftDestination.ThreadReply -> "Conversation reply"
+        DraftDestination.Summary -> "Review summary"
+        DraftDestination.ReviewReply -> "Reply to ${draft.inReplyTo}"
+        DraftDestination.LineComment -> "${draft.path}:${draft.endLine}"
       }
-    return DraftKey(key.accountId, key.repo, key.number, slot)
+    return where +
+      when {
+        draft.submitting -> " · Sending…"
+        draft.mayHaveBeenSent -> " · May have been sent"
+        draft.destination == DraftDestination.LineComment && draft.commitOid == null ->
+          " · Anchor unknown"
+        draft.destination == DraftDestination.LineComment && !anchorIsCurrent(draft) ->
+          " · Outdated"
+        draft.inReview -> " · In review"
+        else -> " · Draft"
+      }
   }
 
   /** Closes the composer. Its text stays a draft. */
@@ -650,55 +657,34 @@ class ChangesController(
     codeView?.selection = null
   }
 
-  /**
-   * Sends what the composer wrote: a line comment, or a reply during a review, goes into the
-   * pending review, which this starts if it's the first; any other reply posts at once.
-   */
-  fun send(target: ComposerTarget, body: String) {
-    val draftKey = draftKey(target)
-    if (composer == target) closeComposer()
-    when (target) {
-      is ComposerTarget.Line -> {
-        scope.launch {
-          repository.saveDraft(key, target.anchor(), body, id = target.draftId)
-          draftRepository.delete(draftKey)
-        }
+  /** Add/remove changes membership; editing always writes the same row. */
+  fun send(target: ComposerTarget) {
+    val draft = draftKey(target)
+    when {
+      target is ComposerTarget.Text -> Unit
+      target is ComposerTarget.Reply && !inReview -> {
+        repository.reply(key, draft)
       }
-      is ComposerTarget.Reply -> {
-        val thread = threads.firstOrNull { it.thread.id == target.threadId }
-        if (target.draftId == 0L && !inReview) {
-          scope.launch { repository.reply(key, target.threadId, body, draftKey) }
-          return
-        }
-        val head = load.loader.value?.newCommit ?: overview?.headOid ?: return
-        val t = thread?.thread
-        val line = (t?.line ?: t?.originalLine ?: 1).coerceAtLeast(1)
-        val side = t?.side?.let(DiffSide::valueOf) ?: DiffSide.New
-        scope.launch {
-          repository.saveDraft(
-            key,
-            target.anchor ?: ReviewAnchor(head, target.path, side, line, line, side),
-            body,
-            id = target.draftId,
-            inReplyTo = target.threadId,
-          )
-          draftRepository.delete(draftKey)
-        }
-      }
+      else -> draftRepository.membership(draft, true)
     }
+    closeComposer()
   }
 
-  /** The send action's label for [target]. */
   fun sendLabel(target: ComposerTarget): String =
     when {
-      target.draftId != 0L -> "Update"
+      target is ComposerTarget.Text -> "Keep draft"
+      allDrafts.any { it.id == target.draftId && it.inReview } -> "Done"
       target is ComposerTarget.Reply && !inReview -> "Reply"
       !inReview -> "Start review"
       else -> "Add to review"
     }
 
-  fun deleteDraft(draft: DraftComment) {
-    scope.launch { repository.deleteDraft(key, draft.id) }
+  fun deleteDraft(draft: DraftEntity) {
+    scope.launch { draftRepository.delete(draft.draftKey) }
+  }
+
+  fun removeFromReview(draft: DraftEntity) {
+    draftRepository.membership(draft.draftKey, false)
   }
 
   /** Resolves [thread] and folds it away, or unresolves it. */
@@ -740,24 +726,18 @@ class ChangesController(
     return text.split('\n').mapIndexed { i, line -> QuotedLine(kind, start + i, line) }
   }
 
-  fun saveSummary(text: String) {
-    scope.launch { repository.setSummary(key, text) }
-  }
-
-  /** Submits the pending review; [onDone] hears whether it went through. */
-  fun submit(event: ReviewEvent, body: String, onDone: (Boolean) -> Unit) {
+  /** Acceptance happens synchronously in the app repository, before the UI scope suspends. */
+  fun submit(event: ReviewEvent, onDone: (Boolean) -> Unit) {
     val head = load.loader.value?.newCommit ?: overview?.headOid ?: return onDone(false)
+    val submission = repository.submit(key, event, head)
     scope.launch {
-      runCatching { repository.submit(key, event, body, head) }
+      runCatching { submission.await() }
         .onSuccess {
           _messages.emit(
-            when (event) {
-              ReviewEvent.Approve -> "Approved"
-              ReviewEvent.RequestChanges -> "Requested changes"
-              ReviewEvent.Comment -> "Review submitted"
-            },
+            if (it) "Review submitted"
+            else draftRepository.writer(DraftKey.summary(key)).error.value ?: "Already submitting",
           )
-          onDone(true)
+          onDone(it)
         }
         .onFailure {
           _messages.emit("Couldn't submit the review: ${it.message}")
@@ -768,9 +748,6 @@ class ChangesController(
 
   private companion object {
     const val DRAFT_IDS = 1_000_000
-    const val UNSENT_IDS = 2_000_000
     val JUMP_TIMEOUT = 5.seconds
-    /** Every draft slot the changes screen writes. */
-    const val SLOT_PREFIX = "review/"
   }
 }

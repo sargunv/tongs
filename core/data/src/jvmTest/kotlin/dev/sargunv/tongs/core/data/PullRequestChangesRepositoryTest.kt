@@ -20,7 +20,6 @@ import dev.sargunv.tongs.forge.api.ReviewEvent
 import dev.sargunv.tongs.forge.api.ReviewSubmission
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -39,6 +38,8 @@ class FakeReviews : PullRequestReviews {
   var remoteViewed = mapOf<String, FileViewedState>()
   var threads = listOf<DiffReviewThread>()
   var pendingReview: PendingReview? = null
+  var refreshGate: CompletableDeferred<Unit>? = null
+  var head = "head1"
   /** If set, mutations wait for it; complete it exceptionally to fail them. */
   var gate: CompletableDeferred<Unit>? = null
   /** Fails the call whose log entry starts with this. */
@@ -55,7 +56,7 @@ class FakeReviews : PullRequestReviews {
       id = "PR_1",
       title = "Make it fast",
       state = "open",
-      headOid = "head1",
+      headOid = head,
       authorLogin = "someone",
       webUrl = "https://github.com/$repo/pull/$number",
       viewerDidAuthor = false,
@@ -63,7 +64,11 @@ class FakeReviews : PullRequestReviews {
       pendingReview = pendingReview,
     )
 
-  override suspend fun threads(repo: RepoRef, number: Int) = threads
+  override suspend fun threads(repo: RepoRef, number: Int): List<DiffReviewThread> {
+    val snapshot = threads
+    refreshGate?.await()
+    return snapshot
+  }
 
   override suspend fun viewedFiles(repo: RepoRef, number: Int) = remoteViewed
 
@@ -91,11 +96,14 @@ class FakeReviews : PullRequestReviews {
     comments: List<DraftReviewComment>,
   ): String {
     call("start $pullRequestId@$commitOid ${comments.map { it.body }}")
+    pendingReview = PendingReview("R_new", "", comments.size)
     return "R_new"
   }
 
-  override suspend fun addToPendingReview(reviewId: String, comment: DraftReviewComment) =
+  override suspend fun addToPendingReview(reviewId: String, comment: DraftReviewComment) {
     call("add $reviewId: ${comment.body}")
+    pendingReview = pendingReview?.let { it.copy(commentCount = it.commentCount + 1) }
+  }
 
   override suspend fun submitPendingReview(reviewId: String, event: ReviewEvent, body: String) =
     call("submit $reviewId $event: $body")
@@ -217,7 +225,7 @@ class PullRequestChangesRepositoryTest {
     assertEquals(range, drafts[1].anchor)
     assertEquals("Looks good otherwise", repo.summary(key).first())
 
-    repo.submit(key, ReviewEvent.Approve, "Looks good otherwise", headOid = "head2")
+    repo.submit(key, ReviewEvent.Approve, "head2").await()
     val submitted = forge.submissions.single()
     assertEquals(ReviewEvent.Approve, submitted.event)
     // Pinned to the commit the drafts were written against.
@@ -228,13 +236,73 @@ class PullRequestChangesRepositoryTest {
   }
 
   @Test
+  fun blankedReviewCommentsStayEditableAndSurviveSubmissionUnchanged() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 4, 4)
+    val blankLine = repo.saveDraft(key, anchor.copy(commitOid = "oldHead"), "Erase this")
+    val blankReply = repo.saveDraft(key, anchor, "Erase this reply", inReplyTo = "T_blank")
+    val blankKeys = listOf(blankLine, blankReply).map { db.drafts().byId(it)!!.draftKey }
+    repo.saveDraft(key, anchor, "Keep this line")
+    repo.saveDraft(key, anchor, "Keep this reply", inReplyTo = "T1")
+    repo.setSummary(key, "Keep this summary")
+    blankKeys.zip(listOf("", " \n\t")).forEach { (draft, body) ->
+      assertTrue(drafts.writer(draft).write(body))
+    }
+    // Submit before the erased bodies have reached Room.
+    val gate = CompletableDeferred<Unit>().also { forge.gate = it }
+    val submission = repo.submit(key, ReviewEvent.Comment, "head1")
+    blankKeys.forEach { assertFalse(drafts.writer(it).locked.value) }
+    runCurrent()
+    val before = blankKeys.map { drafts.row(it)!! }
+    assertEquals(listOf("", " \n\t"), before.map { it.body })
+    assertTrue(before.all { it.inReview && !it.submitting })
+    blankKeys.forEach { assertFalse(drafts.writer(it).locked.value) }
+    assertEquals(listOf("start PR_1@head1 [Keep this line]"), forge.calls)
+    gate.complete(Unit)
+    assertTrue(submission.await())
+    assertEquals(
+      listOf(
+        "start PR_1@head1 [Keep this line]",
+        "reply T1 R_new: Keep this reply",
+        "submit R_new Comment: Keep this summary",
+      ),
+      forge.calls,
+    )
+    assertEquals(before, drafts.all(key).first())
+    blankKeys.forEach {
+      assertTrue(drafts.writer(it).write("Retyped"))
+      drafts.writer(it).flush()
+      assertTrue(drafts.row(it)!!.inReview)
+    }
+  }
+
+  @Test
+  fun blankCommentsDoNotAccompanyASummaryOnlyReview() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    val anchor = ReviewAnchor("oldHead", "src/a.kt", DiffSide.New, 4, 4)
+    val line = repo.saveDraft(key, anchor, "")
+    val reply = repo.saveDraft(key, anchor, " \n\t", inReplyTo = "T1")
+    val before = listOf(line, reply).map { db.drafts().byId(it)!! }
+    repo.setSummary(key, "Summary only")
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(listOf("submit Comment"), forge.calls)
+    val submitted = forge.submissions.single()
+    assertEquals("head1", submitted.commitOid)
+    assertEquals("Summary only", submitted.body)
+    assertTrue(submitted.comments.isEmpty())
+    assertEquals(before, drafts.all(key).first())
+  }
+
+  @Test
   fun aFailedSubmissionKeepsTheDrafts() = dbTest { db ->
     val (repo, key) = repository(db)
     repo.refresh(key)
     repo.saveDraft(key, ReviewAnchor("head1", "a.kt", DiffSide.New, 1, 1), "Hmm")
     forge.gate =
       CompletableDeferred<Unit>().apply { completeExceptionally(RuntimeException("422")) }
-    assertFailsWith<RuntimeException> { repo.submit(key, ReviewEvent.Comment, "", "head1") }
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
     assertEquals(1, repo.drafts(key).first().size)
   }
 
@@ -298,10 +366,19 @@ class PullRequestChangesRepositoryTest {
     val (repo, key) = repository(db)
     forge.threads = listOf(thread("T1", comment("C1", "First")))
     repo.refresh(key)
-    val draft = DraftKey(key.accountId, key.repo, key.number, "review/reply:T1")
+    val draft =
+      DraftKey(
+        key.accountId,
+        key.repo,
+        key.number,
+        "review/reply:T1",
+        DraftDestination.ReviewReply,
+        threadId = "T1",
+      )
     drafts.save(draft, "Done")
     val gate = CompletableDeferred<Unit>().also { forge.gate = it }
-    repo.reply(key, "T1", "Done", draft)
+    repo.reply(key, draft)
+    runCurrent()
     val sending = repo.threads(key).first().single().comments
     assertEquals(listOf("First", "Done"), sending.map { it.body })
     assertEquals(CommentState.Sending, sending.last().state)
@@ -323,11 +400,19 @@ class PullRequestChangesRepositoryTest {
     val (repo, key) = repository(db)
     forge.threads = listOf(thread("T1", comment("C1", "First")))
     repo.refresh(key)
-    val draft = DraftKey(key.accountId, key.repo, key.number, "review/reply:T1")
+    val draft =
+      DraftKey(
+        key.accountId,
+        key.repo,
+        key.number,
+        "review/reply:T1",
+        DraftDestination.ReviewReply,
+        threadId = "T1",
+      )
     drafts.save(draft, "Done")
     forge.refuse = "reply"
     repo.failures.test {
-      repo.reply(key, "T1", "Done", draft)
+      repo.reply(key, draft)
       advanceUntilIdle()
       assertTrue("refused" in awaitItem())
     }
@@ -374,7 +459,8 @@ class PullRequestChangesRepositoryTest {
       listOf(null, "T1"),
       repo.drafts(key).first().map { it.inReplyTo }.sortedBy { it ?: "" },
     )
-    repo.submit(key, ReviewEvent.Comment, "Two things", "head1")
+    repo.setSummary(key, "Two things")
+    repo.submit(key, ReviewEvent.Comment, "head1").await()
     assertEquals(
       listOf(
         "start PR_1@head1 [New thread]",
@@ -387,21 +473,108 @@ class PullRequestChangesRepositoryTest {
   }
 
   @Test
-  fun aFailedStepKeepsWhatTheForgeDoesntHaveYet() = dbTest { db ->
+  fun aFailedSecondStepRetriesOnlyTheUnacceptedDraftAfterContinue() = dbTest { db ->
     val (repo, key) = repository(db)
     forge.threads = listOf(thread("T1", comment("C1", "First")))
     repo.refresh(key)
-    repo.saveDraft(key, ReviewAnchor("head1", "src/b.kt", DiffSide.New, 2, 2), "New thread")
+    val line =
+      repo.saveDraft(key, ReviewAnchor("head1", "src/b.kt", DiffSide.New, 2, 2), "New thread")
+    val lineKey = db.drafts().byId(line)!!.draftKey
     repo.saveDraft(
       key,
       ReviewAnchor("head1", "src/a.kt", DiffSide.New, 4, 4),
       "Agreed",
       inReplyTo = "T1",
     )
+    repo.setSummary(key, "Two things")
+    // The next refresh sees the line comment staged by startPendingReview.
+    forge.threads += thread("T2", comment("C2", "New thread", pending = true))
     forge.refuse = "reply"
-    assertFailsWith<IllegalStateException> { repo.submit(key, ReviewEvent.Comment, "", "head1") }
-    // The new thread is in the forge's pending review now; the reply is still here.
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
     assertEquals(listOf("Agreed"), repo.drafts(key).first().map { it.body })
+    assertTrue(repo.drafts(key).first().none { it.submitting })
+    assertNull(db.drafts().byId(line))
+    assertEquals("", drafts.writer(lineKey).body.value)
+    assertFalse(drafts.writer(lineKey).inReview.value)
+    assertNull(drafts.writer(lineKey).error.value)
+    assertEquals("Two things", repo.summary(key).first())
+    assertEquals("R_new", repo.overview(key).first()!!.pendingReviewId)
+    assertEquals(CommentState.Pending, repo.threads(key).first().last().comments.single().state)
+
+    forge.refuse = null
+    // Continuing is explicit; simply retrying cannot stage anything else.
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(2, forge.calls.size)
+    repo.continuePendingReview(key)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(
+      listOf(
+        "start PR_1@head1 [New thread]",
+        "reply T1 R_new: Agreed",
+        "reply T1 R_new: Agreed",
+        "submit R_new Comment: Two things",
+      ),
+      forge.calls,
+    )
+    assertTrue(repo.drafts(key).first().isEmpty())
+  }
+
+  @Test
+  fun aFailedSecondStagedLineRetriesOnlyTheRemainingLines() = dbTest { db ->
+    val (repo, key) = repository(db)
+    forge.pendingReview = PendingReview("R_web", "Summary", 0)
+    repo.refresh(key)
+    repo.continuePendingReview(key)
+    val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 2, 2)
+    for (body in listOf("One", "Two", "Three")) repo.saveDraft(key, anchor, body)
+    forge.refuse = "add R_web: Two"
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(listOf("Two", "Three"), repo.drafts(key).first().map { it.body })
+    assertTrue(repo.drafts(key).first().none { it.submitting })
+    assertEquals(1, repo.overview(key).first()!!.pendingReviewComments)
+    forge.refuse = null
+    repo.continuePendingReview(key)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(
+      listOf(
+        "add R_web: One",
+        "add R_web: Two",
+        "add R_web: Two",
+        "add R_web: Three",
+        "submit R_web Comment: Summary",
+      ),
+      forge.calls,
+    )
+  }
+
+  @Test
+  fun aFailedFinalSubmitDoesNotRestageAcceptedLinesOrReplies() = dbTest { db ->
+    val (repo, key) = repository(db)
+    forge.pendingReview = PendingReview("R_web", "Summary", 0)
+    repo.refresh(key)
+    repo.continuePendingReview(key)
+    val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 2, 2)
+    repo.saveDraft(key, anchor, "Line")
+    val reply = repo.saveDraft(key, anchor, "Reply", inReplyTo = "T1")
+    val replyKey = db.drafts().byId(reply)!!.draftKey
+    forge.refuse = "submit"
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertTrue(repo.drafts(key).first().isEmpty())
+    assertEquals("", drafts.writer(replyKey).body.value)
+    assertFalse(drafts.writer(replyKey).inReview.value)
+    assertEquals("Summary", repo.summary(key).first())
+    forge.refuse = null
+    repo.continuePendingReview(key)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(
+      listOf(
+        "add R_web: Line",
+        "reply T1 R_web: Reply",
+        "submit R_web Comment: Summary",
+        "submit R_web Comment: Summary",
+      ),
+      forge.calls,
+    )
   }
 
   @Test
@@ -422,7 +595,7 @@ class PullRequestChangesRepositoryTest {
     assertTrue(repo.reviewStarted(key).first())
     assertEquals("From the web", repo.summary(key).first())
     repo.saveDraft(key, ReviewAnchor("head1", "src/b.kt", DiffSide.New, 2, 2), "Another")
-    repo.submit(key, ReviewEvent.Approve, "From the web", "head1")
+    repo.submit(key, ReviewEvent.Approve, "head1").await()
     assertEquals(listOf("add R_web: Another", "submit R_web Approve: From the web"), forge.calls)
 
     // Discarding drops its comments here at once.
@@ -436,6 +609,41 @@ class PullRequestChangesRepositoryTest {
     advanceUntilIdle()
     assertEquals(listOf("delete R_web"), forge.calls)
     assertNull(repo.overview(key).first()!!.pendingReviewId)
+  }
+
+  @Test
+  fun continuingPreservesQueuedSummaryInputAheadOfRemoteAdoption() = dbTest { db ->
+    val (repo, key) = repository(db)
+    forge.pendingReview = PendingReview("R_web", "Remote summary", 0)
+    repo.refresh(key)
+    repo.setSummary(key, "Previously saved")
+    val summary = DraftKey.summary(key)
+    val writer = drafts.writer(summary)
+    val busy = CompletableDeferred<Unit>()
+    writer.enqueue { busy.await() }
+    assertTrue(writer.write("Locally typed"))
+    val continuation = async { repo.continuePendingReview(key) }
+    runCurrent()
+    assertFalse(continuation.isCompleted)
+    busy.complete(Unit)
+    continuation.await()
+    assertEquals("Locally typed", writer.body.value)
+    assertEquals("Locally typed", drafts.get(summary))
+    assertEquals("R_web", drafts.row(summary)?.continuedReviewId)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(listOf("submit R_web Comment: Locally typed"), forge.calls)
+  }
+
+  @Test
+  fun aDescendingCrossSideAnchorRemainsEditableAndSubmittable() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 100, 95, DiffSide.Old)
+    val id = repo.saveDraft(key, anchor, "Across the changed lines")
+    assertEquals(anchor, db.drafts().byId(id)?.anchor)
+    assertEquals(anchor, repo.drafts(key).first().single().anchor)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(anchor, forge.submissions.single().comments.single().anchor)
   }
 
   @Test
@@ -515,25 +723,49 @@ class PullRequestChangesRepositoryTest {
   }
 
   @Test
-  fun submittingBeforeAutosaveClearsTheOldSummary() = dbTest { db ->
+  fun discardingASummaryWhileTheWriterIsBusyPreservesNewerInput() = dbTest { db ->
+    val (_, key) = repository(db)
+    val summary = DraftKey.summary(key)
+    drafts.save(summary, "Discard this")
+    val writer = drafts.writer(summary)
+    val busy = CompletableDeferred<Unit>()
+    writer.enqueue { busy.await() }
+    val deletion = async { drafts.delete(summary) }
+    runCurrent()
+    assertEquals("", writer.body.value)
+    assertTrue(writer.write("New text"))
+    busy.complete(Unit)
+    deletion.await()
+    writer.flush()
+    assertEquals("New text", writer.body.value)
+    assertEquals("New text", drafts.get(summary))
+    assertTrue(writer.inReview.value)
+    // Subsequent input starts from the text still displayed in the composer.
+    assertTrue(writer.write(writer.body.value + " continued"))
+    writer.flush()
+    assertEquals("New text continued", drafts.get(summary))
+  }
+
+  @Test
+  fun submittingFlushesTheLatestWriteThroughSummary() = dbTest { db ->
     val (repo, key) = repository(db)
     repo.refresh(key)
     repo.setSummary(key, "Old summary")
-    repo.submit(key, ReviewEvent.Comment, "Just typed", "head1")
+    drafts.writer(DraftKey.summary(key)).write("Just typed")
+    repo.submit(key, ReviewEvent.Comment, "head1").await()
     assertEquals("Just typed", forge.submissions.single().body)
     assertEquals("", repo.summary(key).first())
     assertFalse(repo.reviewStarted(key).first())
   }
 
   @Test
-  fun aRefusedSubmissionSavesTheSummaryBeforeAutosave() = dbTest { db ->
+  fun aRefusedSubmissionKeepsTheLatestWriteThroughSummary() = dbTest { db ->
     val (repo, key) = repository(db)
     repo.refresh(key)
     repo.setSummary(key, "Old summary")
+    drafts.writer(DraftKey.summary(key)).write("Just typed")
     forge.refuse = "submit"
-    assertFailsWith<IllegalStateException> {
-      repo.submit(key, ReviewEvent.Comment, "Just typed", "head1")
-    }
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
     assertEquals("Just typed", repo.summary(key).first())
   }
 
@@ -548,10 +780,10 @@ class PullRequestChangesRepositoryTest {
         "Agreed",
         inReplyTo = "T1",
       )
-    val row = db.pullRequestChanges().draft(id)!!
+    val row = db.drafts().byId(id)!!
     assertEquals("T1", row.inReplyTo)
     assertEquals("Agreed", row.body)
-    repo.submit(key, ReviewEvent.Comment, "", "head1")
+    repo.submit(key, ReviewEvent.Comment, "head1").await()
     assertEquals(
       listOf(
         "start PR_1@head1 []",
@@ -564,43 +796,80 @@ class PullRequestChangesRepositoryTest {
   }
 
   @Test
-  fun submittingKeepsACommentEditedWhileTheRequestWasInFlight() = dbTest { db ->
+  fun submittingLocksTheSameCommentAndSummaryBeforeWaitingForRoom() = dbTest { db ->
     val (repo, key) = repository(db)
     repo.refresh(key)
     val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 3, 3)
     val id = repo.saveDraft(key, anchor, "First version")
     repo.setSummary(key, "First summary")
-    val gate = CompletableDeferred<Unit>().also { forge.gate = it }
-    val submitting = async { repo.submit(key, ReviewEvent.Comment, "First summary", "head1") }
+    val editor = drafts.writer(db.drafts().byId(id)!!.draftKey)
+    val busy = CompletableDeferred<Unit>()
+    editor.enqueue { busy.await() }
+    editor.write("Latest version")
+    val network = CompletableDeferred<Unit>().also { forge.gate = it }
+    val submission = repo.submit(key, ReviewEvent.Comment, "head1")
+    // Input and formatting are refused even before the first database suspension returns.
+    assertFalse(editor.write("Too late"))
+    assertFalse(drafts.writer(DraftKey.summary(key)).write("Too late"))
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    busy.complete(Unit)
     runCurrent()
-    repo.saveDraft(key, anchor, "New wording", id)
-    repo.setSummary(key, "New summary")
-    val editKey = repo.pendingEditKey(key, id)
-    drafts.save(editKey, "Still editing")
-    gate.complete(Unit)
-    submitting.await()
-    assertEquals("First version", forge.submissions.single().comments.single().body)
-    assertEquals("New wording", repo.drafts(key).first().single().body)
-    assertEquals("New summary", repo.summary(key).first())
-    assertEquals("Still editing", drafts.get(editKey))
+    assertTrue(db.drafts().byId(id)!!.submitting)
+    network.complete(Unit)
+    submission.await()
+    assertEquals("Latest version", forge.submissions.single().comments.single().body)
+    assertEquals("First summary", forge.submissions.single().body)
+    assertTrue(repo.drafts(key).first().isEmpty())
   }
 
   @Test
-  fun submittingKeepsAnAutosavedEditBeforeUpdateIsPressed() = dbTest { db ->
+  fun repliesHaveNoCommitAndDoNotReanchorOlderLineComments() = dbTest { db ->
     val (repo, key) = repository(db)
     repo.refresh(key)
-    val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 3, 3)
-    val id = repo.saveDraft(key, anchor, "First version")
-    val gate = CompletableDeferred<Unit>().also { forge.gate = it }
-    val submitting = async { repo.submit(key, ReviewEvent.Comment, "", "head1") }
-    runCurrent()
-    val editKey = repo.pendingEditKey(key, id)
-    drafts.save(editKey, "Still editing")
-    gate.complete(Unit)
-    submitting.await()
-    assertEquals("First version", forge.submissions.single().comments.single().body)
-    assertEquals(id, repo.drafts(key).first().single().id)
-    assertEquals("Still editing", drafts.get(editKey))
+    val anchor = ReviewAnchor("headA", "old/path.kt", DiffSide.New, 3, 3)
+    val id = repo.saveDraft(key, anchor, "On A")
+    // Body edits after a push keep A; a reply created on B contributes no commit.
+    repo.saveDraft(key, anchor.copy(commitOid = "headB"), "Still on A", id)
+    val reply = repo.saveDraft(key, anchor.copy(commitOid = "headB"), "Reply", inReplyTo = "T1")
+    assertNull(db.drafts().byId(reply)!!.commitOid)
+    repo.submit(key, ReviewEvent.Comment, "headB").await()
+    assertEquals("start PR_1@headA [Still on A]", forge.calls.first())
+  }
+
+  @Test
+  fun mixedOrUnknownLineAnchorsBlockSubmissionAndKeepTheText() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    val a = ReviewAnchor("headA", "gone.kt", DiffSide.New, 3, 3)
+    repo.saveDraft(key, a, "On A")
+    val other = repo.saveDraft(key, a.copy(commitOid = "headB"), "On B")
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "headB").await())
+    drafts.delete(db.drafts().byId(other)!!.draftKey)
+    repo.saveDraft(key, a.copy(commitOid = ""), "Unknown")
+    assertFalse(repo.submit(key, ReviewEvent.Comment, "headB").await())
+    assertTrue(forge.calls.isEmpty())
+    assertEquals(listOf("On A", "Unknown"), repo.drafts(key).first().map { it.body })
+  }
+
+  @Test
+  fun anExplicitlyClearedRemoteSummarySubmitsAnEmptyBody() = dbTest { db ->
+    val (repo, key) = repository(db)
+    forge.pendingReview = PendingReview("R_web", "From the web", 1)
+    repo.refresh(key)
+    repo.continuePendingReview(key)
+    drafts.writer(DraftKey.summary(key)).write("")
+    repo.submit(key, ReviewEvent.Approve, "head1").await()
+    assertEquals(listOf("submit R_web Approve: "), forge.calls)
+  }
+
+  @Test
+  fun aRemoteReviewRequiresAnExplicitContinueEvenWithLocalDrafts() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.saveDraft(key, ReviewAnchor("head1", "a.kt", DiffSide.New, 1, 1), "Local")
+    forge.pendingReview = PendingReview("R_web", "From the web", 1)
+    repo.refresh(key)
+    assertFalse(repo.submit(key, ReviewEvent.Approve, "head1").await())
+    assertTrue(forge.calls.isEmpty())
   }
 
   @Test
@@ -629,7 +898,7 @@ class PullRequestChangesRepositoryTest {
     )
     assertEquals(
       "T1",
-      dao.drafts(key.accountId, key.repo.owner, key.repo.name, key.number).single().inReplyTo,
+      db.drafts().all(key.accountId, key.repo.owner, key.repo.name, key.number).single().inReplyTo,
     )
   }
 
@@ -657,7 +926,15 @@ class PullRequestChangesRepositoryTest {
     val (repo, key) = repository(db)
     forge.threads = listOf(thread("T1", comment("C1", "First")))
     repo.refresh(key)
-    val draft = DraftKey(key.accountId, key.repo, key.number, "review/reply:T1")
+    val draft =
+      DraftKey(
+        key.accountId,
+        key.repo,
+        key.number,
+        "review/reply:T1",
+        DraftDestination.ReviewReply,
+        threadId = "T1",
+      )
     drafts.save(draft, "Unconfirmed")
     db
       .pullRequestChanges()
@@ -678,5 +955,37 @@ class PullRequestChangesRepositoryTest {
     repo.refresh(key)
     assertEquals(listOf("C1"), repo.threads(key).first().single().comments.map { it.id })
     assertEquals("Unconfirmed", drafts.get(draft))
+  }
+
+  @Test
+  fun aReplyConfirmedDuringARefreshSurvivesByServerIdThenFollowsTheNextRefresh() = dbTest { db ->
+    val (repo, key) = repository(db)
+    forge.threads = listOf(thread("T1", comment("C1", "First")))
+    repo.refresh(key)
+    val draft =
+      DraftKey(
+        key.accountId,
+        key.repo,
+        key.number,
+        "review/reply:T1",
+        DraftDestination.ReviewReply,
+        threadId = "T1",
+      )
+    drafts.save(draft, "Posted")
+    val read = CompletableDeferred<Unit>().also { forge.refreshGate = it }
+    val refresh = async { repo.refresh(key) }
+    runCurrent()
+    repo.reply(key, draft).await()
+    assertNull(drafts.get(draft))
+    read.complete(Unit)
+    refresh.await()
+    assertEquals(
+      listOf("C1", "C-Posted"),
+      repo.threads(key).first().single().comments.map { it.id },
+    )
+    // A later server snapshot owns edits/deletions; the preservation is only for overlapping reads.
+    forge.refreshGate = null
+    repo.refresh(key)
+    assertEquals(listOf("C1"), repo.threads(key).first().single().comments.map { it.id })
   }
 }

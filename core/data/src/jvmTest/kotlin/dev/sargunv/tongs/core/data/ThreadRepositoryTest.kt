@@ -41,6 +41,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.withContext
 
 class ThreadRepositoryTest {
@@ -81,6 +82,8 @@ class ThreadRepositoryTest {
     var gate: CompletableDeferred<Unit>? = null
     var pageGate: CompletableDeferred<Unit>? = null
     var reviewThreads = emptyList<ReviewThread>()
+    var refreshGate: CompletableDeferred<Unit>? = null
+    var refuseState = false
 
     private fun timeline() = (0 until count).map { comment("$it", it) }
 
@@ -91,13 +94,16 @@ class ThreadRepositoryTest {
       tailCount: Int,
     ): ThreadLoad {
       val all = timeline()
-      return ThreadLoad(
-        detail,
-        head = page(all.take(this.headCount), false, all.size > this.headCount),
-        tail = page(all.takeLast(this.tailCount), all.size > this.tailCount, false),
-        timelineCount = all.size,
-        reviewThreads = reviewThreads,
-      )
+      val snapshot =
+        ThreadLoad(
+          detail,
+          head = page(all.take(this.headCount), false, all.size > this.headCount),
+          tail = page(all.takeLast(this.tailCount), all.size > this.tailCount, false),
+          timelineCount = all.size,
+          reviewThreads = reviewThreads,
+        )
+      refreshGate?.await()
+      return snapshot
     }
 
     override suspend fun loadTimeline(
@@ -123,11 +129,13 @@ class ThreadRepositoryTest {
     override suspend fun close(threadId: String, kind: ThreadKind, reason: StateReason?) {
       calls += "close ${reason?.raw}"
       gate?.await()
+      if (refuseState) error("state refused")
       detail = detail.copy(state = ThreadState.Closed, stateReason = reason)
     }
 
     override suspend fun reopen(threadId: String, kind: ThreadKind) {
       calls += "reopen"
+      if (refuseState) error("state refused")
     }
 
     override suspend fun react(subjectId: String, reaction: Reaction, add: Boolean) {
@@ -260,7 +268,9 @@ class ThreadRepositoryTest {
     val f = fixture(db, source)
     f.threads.refresh(f.ref)
     source.gate = CompletableDeferred()
-    f.threads.comment(f.ref, "Looks good")
+    f.drafts.save(f.ref.replyDraft, "Looks good")
+    f.threads.comment(f.ref)
+    runCurrent()
     source.count = 2
     f.threads.refresh(f.ref)
     val snapshot = f.threads.observe(f.ref).first()!!
@@ -276,7 +286,9 @@ class ThreadRepositoryTest {
     f.threads.refresh(f.ref)
     f.drafts.save(f.ref.replyDraft, "Looks good")
 
-    f.threads.comment(f.ref, "Looks good")
+    f.drafts.save(f.ref.replyDraft, "Looks good")
+    f.threads.comment(f.ref)
+    runCurrent()
     var last = f.threads.observe(f.ref).first()!!.items.last()
     assertTrue(last.pending)
     assertEquals("Looks good", (last.item as TimelineItem.Comment).body)
@@ -298,7 +310,9 @@ class ThreadRepositoryTest {
     val failures = mutableListOf<String>()
     backgroundScope.launchCollect(f.threads.failures, failures)
 
-    f.threads.comment(f.ref, "Looks good")
+    f.drafts.save(f.ref.replyDraft, "Looks good")
+    f.threads.comment(f.ref)
+    runCurrent()
     source.gate!!.completeExceptionally(IllegalStateException("403 Forbidden"))
     eventually { failures.isNotEmpty() }
 
@@ -312,12 +326,14 @@ class ThreadRepositoryTest {
     val source = FakeThreads(count = 2).apply { gate = CompletableDeferred() }
     val f = fixture(db, source)
     f.threads.refresh(f.ref)
-    // The composer autosaves 400 ms after typing stops; sending sooner leaves an older draft.
+    // The final edit queues immediately, before submit waits for the writer.
     f.drafts.save(f.ref.replyDraft, "Looks")
     val failures = mutableListOf<String>()
     backgroundScope.launchCollect(f.threads.failures, failures)
 
-    f.threads.comment(f.ref, "Looks good")
+    f.drafts.save(f.ref.replyDraft, "Looks good")
+    f.threads.comment(f.ref)
+    runCurrent()
     source.gate!!.completeExceptionally(IllegalStateException("403 Forbidden"))
     eventually { failures.isNotEmpty() }
 
@@ -325,20 +341,22 @@ class ThreadRepositoryTest {
   }
 
   @Test
-  fun aSlowSendLeavesADraftWrittenSinceAlone() = dbTest { db ->
+  fun aSlowSendFreezesInputAndDoesNotCreateAFollowupCopy() = dbTest { db ->
     val source = FakeThreads(count = 2).apply { gate = CompletableDeferred() }
     val f = fixture(db, source)
     f.threads.refresh(f.ref)
     f.drafts.save(f.ref.replyDraft, "Looks good")
 
-    f.threads.comment(f.ref, "Looks good", close = StateReason.Completed)
+    f.drafts.save(f.ref.replyDraft, "Looks good")
+    f.threads.comment(f.ref, close = StateReason.Completed)
+    runCurrent()
     eventually { source.calls.isNotEmpty() }
-    // While it's sending, the composer is reopened and a follow-up written.
-    f.drafts.save(f.ref.replyDraft, "One more thing")
+    // The same draft is read-only in a reopened composer.
+    assertFalse(f.drafts.writer(f.ref.replyDraft).write("One more thing"))
     source.gate!!.complete(Unit)
     eventually { "close COMPLETED" in source.calls }
 
-    assertEquals("One more thing", f.drafts.get(f.ref.replyDraft))
+    eventually { f.drafts.get(f.ref.replyDraft) == null }
   }
 
   @Test
@@ -346,9 +364,41 @@ class ThreadRepositoryTest {
     val source = FakeThreads(count = 1)
     val f = fixture(db, source)
     f.threads.refresh(f.ref)
-    f.threads.comment(f.ref, "Fixed in #8", close = StateReason.Completed)
+    f.drafts.save(f.ref.replyDraft, "Fixed in #8")
+    f.threads.comment(f.ref, close = StateReason.Completed)
+    runCurrent()
     eventually { f.threads.observe(f.ref).first()!!.detail.state == ThreadState.Closed }
     assertEquals(listOf("comment Fixed in #8", "close COMPLETED"), source.calls)
+  }
+
+  @Test
+  fun failedCloseAfterAcceptedCommentDoesNotRestoreOrResendTheDraft() = dbTest { db ->
+    val source = FakeThreads(count = 1).apply { refuseState = true }
+    val f = fixture(db, source)
+    f.threads.refresh(f.ref)
+    f.drafts.save(f.ref.replyDraft, "Fixed")
+    assertFalse(f.threads.comment(f.ref, close = StateReason.Completed).await())
+    assertNull(f.drafts.get(f.ref.replyDraft))
+    assertEquals(1, source.calls.count { it == "comment Fixed" })
+    assertFalse(f.threads.comment(f.ref, close = StateReason.Completed).await())
+    assertEquals(1, source.calls.count { it == "comment Fixed" })
+  }
+
+  @Test
+  fun failedReopenAfterAcceptedCommentDoesNotRestoreOrResendTheDraft() = dbTest { db ->
+    val source =
+      FakeThreads(count = 1).apply {
+        detail = detail.copy(state = ThreadState.Closed)
+        refuseState = true
+      }
+    val f = fixture(db, source)
+    f.threads.refresh(f.ref)
+    f.drafts.save(f.ref.replyDraft, "Reopening")
+    assertFalse(f.threads.comment(f.ref, reopen = true).await())
+    assertNull(f.drafts.get(f.ref.replyDraft))
+    assertEquals(1, source.calls.count { it == "comment Reopening" })
+    assertFalse(f.threads.comment(f.ref, reopen = true).await())
+    assertEquals(1, source.calls.count { it == "comment Reopening" })
   }
 
   @Test
@@ -442,6 +492,46 @@ class ThreadRepositoryTest {
     val review = f.threads.observe(f.ref).first()!!.items.single().item as TimelineItem.Review
     assertEquals("SUPERSEDED", review.state.raw)
   }
+
+  @Test
+  fun aCommentConfirmedAfterRefreshStartsSurvivesThatRefresh() = dbTest { db ->
+    val source = FakeThreads(2)
+    val f = fixture(db, source)
+    f.threads.refresh(f.ref)
+    val gate = CompletableDeferred<Unit>().also { source.refreshGate = it }
+    val read = backgroundScope.launch { f.threads.refresh(f.ref) }
+    runCurrent()
+    f.drafts.save(f.ref.replyDraft, "Posted during refresh")
+    f.threads.comment(f.ref).await()
+    gate.complete(Unit)
+    read.join()
+    assertEquals(listOf("0", "1", "posted"), f.threads.observe(f.ref).first()!!.ids())
+    source.refreshGate = null
+    f.threads.refresh(f.ref)
+    assertEquals(listOf("0", "1"), f.threads.observe(f.ref).first()!!.ids())
+  }
+
+  @Test
+  fun repeatedSubmitAndTypingStopBeforeABusyWriterReturns() = dbTest { db ->
+    val source = FakeThreads(2)
+    val f = fixture(db, source)
+    f.threads.refresh(f.ref)
+    f.drafts.save(f.ref.replyDraft, "First")
+    val writer = f.drafts.writer(f.ref.replyDraft)
+    val busy = CompletableDeferred<Unit>()
+    writer.enqueue { busy.await() }
+    writer.write("Last edit")
+    val send = f.threads.comment(f.ref)
+    assertFalse(writer.write("Typed during submit"))
+    assertFalse(f.threads.comment(f.ref).await())
+    // A dismissed caller cannot cancel preparation already accepted by the repository.
+    val screen = backgroundScope.launch { send.await() }
+    screen.cancel()
+    busy.complete(Unit)
+    send.await()
+    assertEquals(listOf("comment Last edit"), source.calls)
+    assertNull(f.drafts.get(f.ref.replyDraft))
+  }
 }
 
 class DraftRepositoryTest {
@@ -462,7 +552,7 @@ class DraftRepositoryTest {
     assertEquals(setOf(DraftThread(account, repo, 7)), drafts.threadsWithDrafts().first())
 
     drafts.save(key, "   ")
-    assertNull(drafts.get(key))
+    assertEquals("   ", drafts.get(key))
     assertEquals(emptySet(), drafts.threadsWithDrafts().first())
   }
 
@@ -507,6 +597,58 @@ class DraftRepositoryTest {
     drafts.save(DraftKey(account, repo, 7), "Reply")
     AccountRepository(db, tokens, emptyMap(), clients).signOut(account)
     assertEquals(emptySet(), drafts.threadsWithDrafts().first())
+  }
+
+  @Test
+  fun restartUnlocksEveryClaimedDestinationWithAWarningAndDoesNotReplay() = dbTest { db ->
+    val (account, _) = signIn(db, FakeInbox())
+    val job = kotlinx.coroutines.SupervisorJob()
+    val app = CoroutineScope(job + kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+    val drafts = DraftRepository(db, app, virtualClock())
+    val pr = PullRequestKey(account, repo, 7)
+    val keys =
+      listOf(
+        DraftKey(account, repo, 7),
+        DraftKey(
+          account,
+          repo,
+          7,
+          "line",
+          DraftDestination.LineComment,
+          dev.sargunv.tongs.forge.api.ReviewAnchor(
+            "headA",
+            "gone.kt",
+            dev.sargunv.tongs.engine.DiffSide.New,
+            3,
+            3,
+          ),
+        ),
+        DraftKey(account, repo, 7, "reply:T1", DraftDestination.ReviewReply, threadId = "T1"),
+        DraftKey.summary(pr),
+      )
+    keys.forEach { drafts.save(it, "Keep ${it.slot}") }
+    var deliveries = 0
+    val network = CompletableDeferred<Unit>()
+    val submission =
+      drafts.submit(keys) {
+        deliveries++
+        network.await()
+      }
+    runCurrent()
+    assertTrue(db.drafts().all(account, repo.owner, repo.name, 7).all { it.submitting })
+    job.cancel()
+    submission.join()
+    val restarted = DraftRepository(db, backgroundScope, virtualClock())
+    for (key in keys) {
+      val editor = restarted.writer(key)
+      editor.ready.first { it }
+      assertTrue(editor.warning.value)
+      assertFalse(editor.locked.value)
+      assertEquals("Keep ${key.slot}", editor.body.value)
+    }
+    val rows = db.drafts().all(account, repo.owner, repo.name, 7)
+    assertTrue(rows.all { it.mayHaveBeenSent && !it.submitting })
+    assertEquals(1, deliveries)
   }
 }
 

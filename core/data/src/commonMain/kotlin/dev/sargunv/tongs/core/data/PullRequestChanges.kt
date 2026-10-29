@@ -1,7 +1,6 @@
 package dev.sargunv.tongs.core.data
 
 import androidx.room3.withWriteTransaction
-import dev.sargunv.tongs.engine.DiffSide
 import dev.sargunv.tongs.forge.api.DraftReviewComment
 import dev.sargunv.tongs.forge.api.FileViewedState
 import dev.sargunv.tongs.forge.api.PullRequestReviews
@@ -34,18 +33,6 @@ data class FileVersion(val path: String, val blob: String)
 class ReviewThreadWithComments(
   val thread: ChangesThreadEntity,
   val comments: List<ChangesThreadCommentEntity>,
-)
-
-/**
- * A pending review comment, with its anchor decoded: a line comment, or a reply to thread
- * [inReplyTo], anchored where the thread is.
- */
-data class DraftComment(
-  val id: Long,
-  val anchor: ReviewAnchor,
-  val body: String,
-  val updatedAt: Long,
-  val inReplyTo: String? = null,
 )
 
 /**
@@ -82,25 +69,26 @@ class PullRequestChangesRepository(
       }
       .distinctUntilChanged()
 
-  fun drafts(key: PullRequestKey): Flow<List<DraftComment>> =
-    dao.observeDrafts(key.accountId, key.repo.owner, key.repo.name, key.number).map { rows ->
-      rows.map { it.toDraft() }
+  fun drafts(key: PullRequestKey): Flow<List<DraftEntity>> =
+    drafts.all(key).map { rows ->
+      rows.filter {
+        (it.body.isNotBlank() || it.inReview) &&
+          (it.destination == DraftDestination.LineComment ||
+            it.destination == DraftDestination.ReviewReply)
+      }
     }
 
   fun summary(key: PullRequestKey): Flow<String> =
-    dao.observeDraftReview(key.accountId, key.repo.owner, key.repo.name, key.number).map {
-      it?.summary.orEmpty()
-    }
+    drafts.observe(DraftKey.summary(key)).map { it.orEmpty() }
 
-  /**
-   * Whether a review is under way here: it has a summary row, which [continuePendingReview] also
-   * makes. A pending review from another client asks to be continued or discarded until it is.
-   */
   fun reviewStarted(key: PullRequestKey): Flow<Boolean> =
-    dao
-      .observeDraftReview(key.accountId, key.repo.owner, key.repo.name, key.number)
-      .map { it != null }
-      .distinctUntilChanged()
+    drafts.all(key).map { rows -> rows.any { it.inReview } }.distinctUntilChanged()
+
+  fun pendingReviewContinued(key: PullRequestKey): Flow<Boolean> =
+    combine(overview(key), drafts.all(key)) { overview, rows ->
+      overview?.pendingReviewId == null ||
+        rows.any { it.continuedReviewId == overview.pendingReviewId }
+    }
 
   fun threads(key: PullRequestKey): Flow<List<ReviewThreadWithComments>> =
     combine(
@@ -115,6 +103,7 @@ class PullRequestChangesRepository(
 
   /** Fetches the PR's review metadata and threads. Throws if the forge can't be reached. */
   suspend fun refresh(key: PullRequestKey) {
+    val started = db.withWriteTransaction { confirmationSequence }
     val api = api(key)
     val overview = api.overview(key.repo, key.number)
     val threads = api.threads(key.repo, key.number)
@@ -125,6 +114,16 @@ class PullRequestChangesRepository(
         dao.sendingComments(key.accountId, key.repo.owner, key.repo.name, key.number).filter {
           it.id in sendingReplies
         }
+      val newer =
+        dao
+          .observeThreadComments(key.accountId, key.repo.owner, key.repo.name, key.number)
+          .first()
+          .filter { (confirmations[key to it.id] ?: 0) > started }
+      val newerThreads =
+        dao
+          .observeThreads(key.accountId, key.repo.owner, key.repo.name, key.number)
+          .first()
+          .filter { t -> newer.any { it.threadId == t.id } }
       dao.upsertOverview(
         PullRequestOverviewEntity(
           accountId = key.accountId,
@@ -189,12 +188,15 @@ class PullRequestChangesRepository(
           }
         },
       )
-      val threadIds = threads.mapTo(HashSet()) { it.id }
+      val remoteIds = threads.flatMap { it.comments }.mapTo(HashSet()) { it.id }
+      dao.upsertThreads(newerThreads.filter { t -> threads.none { it.id == t.id } })
+      dao.upsertThreadComments(newer.filter { it.id !in remoteIds })
+      val threadIds = (threads.map { it.id } + newerThreads.map { it.id }).toSet()
       val sizes = threads.associate { it.id to it.comments.size }
       dao.upsertThreadComments(
         sending
           .filter { it.threadId in threadIds }
-          .map { it.copy(position = sizes.getValue(it.threadId) + it.position) },
+          .map { it.copy(position = (sizes[it.threadId] ?: 0) + it.position) },
       )
     }
   }
@@ -333,11 +335,7 @@ class PullRequestChangesRepository(
   private val queued = HashMap<ViewedId, Int>()
   private val confirmed = HashMap<ViewedId, ViewedFileEntity?>()
 
-  /**
-   * Saves a comment to the pending review, creating the review if it's the first: a line comment at
-   * [anchor], or a reply to thread [inReplyTo] anchored where it is. Pass the draft's [id] to edit
-   * it. Returns its id.
-   */
+  /** Creates a draft with a fixed destination; subsequent edits touch only its body. */
   suspend fun saveDraft(
     key: PullRequestKey,
     anchor: ReviewAnchor,
@@ -345,141 +343,113 @@ class PullRequestChangesRepository(
     id: Long = 0,
     inReplyTo: String? = null,
   ): Long {
-    val now = clock.now().toEpochMilliseconds()
-    val created = if (id != 0L) dao.draft(id)?.createdAt ?: now else now
-    val entity =
-      DraftCommentEntity(
-        id = id,
-        accountId = key.accountId,
-        owner = key.repo.owner,
-        repo = key.repo.name,
-        number = key.number,
-        commitOid = anchor.commitOid,
-        path = anchor.path,
-        side = anchor.side.name,
-        startSide = anchor.startSide.name,
-        startLine = anchor.startLine,
-        endLine = anchor.endLine,
-        body = body,
-        createdAt = created,
-        updatedAt = now,
-        inReplyTo = inReplyTo,
-      )
-    val rowId = dao.upsertDraft(entity)
-    return if (id != 0L) id else rowId
-  }
-
-  suspend fun setSummary(key: PullRequestKey, summary: String) =
-    dao.upsertDraftReview(
-      DraftReviewEntity(
-        key.accountId,
-        key.repo.owner,
-        key.repo.name,
-        key.number,
-        summary,
-        clock.now().toEpochMilliseconds(),
-      ),
-    )
-
-  /**
-   * Submits the pending review: [summary], [event], and every draft. The review pins the commit its
-   * drafts were written against, or [headOid] without drafts or if they span several.
-   *
-   * Line comments alone go in one call, so it all lands or none of it does. Replies to threads, and
-   * a pending review left on the forge by another client, need several: the review is started (or
-   * continued) on the forge, each draft is added and then deleted here, and the review is
-   * submitted. If a step fails, what the forge already has stays in its pending review, which shows
-   * here after the refresh, and the rest stays here; submitting again picks up where it stopped. On
-   * success the drafts are gone and the threads refreshed; on failure the exception says why.
-   */
-  suspend fun submit(key: PullRequestKey, event: ReviewEvent, summary: String, headOid: String) {
-    val (owner, repo) = key.repo.owner to key.repo.name
-    val drafts = db.withWriteTransaction {
-      // Submission can beat the field's autosave debounce.
-      setSummary(key, summary)
-      dao.drafts(key.accountId, owner, repo, key.number)
-    }
-    val commit = drafts.map { it.commitOid }.distinct().singleOrNull() ?: headOid
-    val (replies, lines) = drafts.partition { it.inReplyTo != null }
-    val overview = dao.overview(key.accountId, owner, repo, key.number)
-    val api = api(key)
-    try {
-      val remote = overview?.pendingReviewId
-      if (remote == null && replies.isEmpty()) {
-        api.submitReview(
+    val existing = if (id != 0L) drafts.byId(id) else null
+    val draft =
+      existing?.draftKey
+        ?: DraftKey(
+          key.accountId,
           key.repo,
           key.number,
-          ReviewSubmission(
-            commitOid = commit,
-            event = event,
-            body = summary,
-            comments = lines.map { DraftReviewComment(it.toDraft().anchor, it.body) },
-          ),
+          "review/comment:${kotlin.random.Random.nextLong()}",
+          if (inReplyTo == null) DraftDestination.LineComment else DraftDestination.ReviewReply,
+          anchor.takeIf { inReplyTo == null },
+          inReplyTo,
         )
-        deleteSubmitted(lines)
-      } else {
-        val reviewId =
-          remote
-            ?: api
-              .startPendingReview(
-                pullRequestId = overview?.nodeId ?: error("the PR hasn't loaded yet"),
-                commitOid = commit,
-                comments = lines.map { DraftReviewComment(it.toDraft().anchor, it.body) },
-              )
-              .also { deleteSubmitted(lines) }
-        if (remote != null) {
-          for (line in lines) {
-            api.addToPendingReview(reviewId, DraftReviewComment(line.toDraft().anchor, line.body))
-            deleteSubmitted(listOf(line))
+    drafts.save(draft, body)
+    drafts.membership(draft, true)
+    drafts.writer(draft).flush()
+    return checkNotNull(drafts.row(draft)).id
+  }
+
+  suspend fun setSummary(key: PullRequestKey, summary: String) {
+    val draft = DraftKey.summary(key)
+    drafts.save(draft, summary)
+    drafts.membership(draft, true)
+    drafts.writer(draft).flush()
+  }
+
+  /** Claim in Room, deliver outside the transaction, then delete or unlock the same rows. */
+  fun submit(
+    key: PullRequestKey,
+    event: ReviewEvent,
+    headOid: String,
+  ): kotlinx.coroutines.Deferred<Boolean> =
+    drafts.submitReview(key) { rows ->
+      val summary = rows.singleOrNull { it.destination == DraftDestination.Summary }?.body.orEmpty()
+      val comments = rows.filter {
+        isDeliverableReviewComment(it.destination, it.inReview, it.body)
+      }
+      val replies = comments.filter { it.destination == DraftDestination.ReviewReply }
+      val lines = comments.filter { it.destination == DraftDestination.LineComment }
+      check(lines.all { !it.commitOid.isNullOrEmpty() }) {
+        "A draft's anchor is unknown. Discard it or create a new comment on the intended lines."
+      }
+      val commits = lines.map { it.commitOid!! }.distinct()
+      check(commits.size <= 1) { "Drafts refer to different commits. Submit them separately." }
+      val commit = commits.singleOrNull() ?: headOid
+      val overview = dao.overview(key.accountId, key.repo.owner, key.repo.name, key.number)
+      check(
+        overview?.pendingReviewId == null ||
+          rows.any { it.continuedReviewId == overview.pendingReviewId },
+      ) {
+        "Continue or discard the review started elsewhere first"
+      }
+      val api = api(key)
+      try {
+        val remote = overview?.pendingReviewId
+        if (remote == null && replies.isEmpty()) {
+          drafts.deliverAccepted(rows) {
+            api.submitReview(
+              key.repo,
+              key.number,
+              ReviewSubmission(
+                commit,
+                event,
+                summary,
+                lines.map { DraftReviewComment(checkNotNull(it.anchor), it.body) },
+              ),
+            )
           }
+        } else {
+          val reviewId =
+            remote
+              ?: drafts.deliverAccepted(lines) {
+                api.startPendingReview(
+                  overview?.nodeId ?: error("The PR hasn't loaded yet"),
+                  commit,
+                  lines.map { DraftReviewComment(checkNotNull(it.anchor), it.body) },
+                )
+              }
+          if (remote != null)
+            for (line in lines) {
+              drafts.deliverAccepted(listOf(line)) {
+                api.addToPendingReview(
+                  reviewId,
+                  DraftReviewComment(checkNotNull(line.anchor), line.body),
+                )
+              }
+            }
+          for (reply in replies) {
+            drafts.deliverAccepted(listOf(reply)) {
+              api.reply(checkNotNull(reply.inReplyTo), reply.body, pendingReviewId = reviewId)
+            }
+          }
+          drafts.deliverAccepted(rows) { api.submitPendingReview(reviewId, event, summary) }
         }
-        for (reply in replies) {
-          api.reply(checkNotNull(reply.inReplyTo), reply.body, pendingReviewId = reviewId)
-          deleteSubmitted(listOf(reply))
-        }
-        api.submitPendingReview(reviewId, event, summary)
-      }
-      db.withWriteTransaction {
-        if (dao.draftReview(key.accountId, owner, repo, key.number)?.summary == summary) {
-          dao.deleteDraftReview(key.accountId, owner, repo, key.number)
-        }
-        for (draft in drafts) {
-          if (dao.draft(draft.id) == null)
-            this@PullRequestChangesRepository.drafts.delete(pendingEditKey(key, draft.id))
-        }
-      }
-    } finally {
-      runCatching { refresh(key) }
-    }
-  }
-
-  /**
-   * Deletes [sent] drafts the forge now has, unless they were edited since they were read: an edit
-   * saved while the review was on its way stays, to go out with the next one.
-   */
-  private suspend fun deleteSubmitted(sent: List<DraftCommentEntity>) {
-    db.withWriteTransaction {
-      for (draft in sent) {
-        val key = PullRequestKey(draft.accountId, RepoRef(draft.owner, draft.repo), draft.number)
-        val editing = drafts.get(pendingEditKey(key, draft.id))
-        // An open composer can have newer words even before Update saves them to this row.
-        if (editing != null && editing != draft.body) continue
-        dao.deleteDraftIfUnchanged(draft.id, draft.updatedAt, draft.body)
+      } finally {
+        runCatching { refresh(key) }
       }
     }
-  }
 
-  /**
-   * Picks up the review left pending on the forge by another client: its summary becomes this
-   * review's, unless one is written here already, and its comments go out with this review.
-   */
+  /** Continue explicitly: import the summary only when no local summary exists. */
   suspend fun continuePendingReview(key: PullRequestKey) {
-    val (owner, repo) = key.repo.owner to key.repo.name
-    val remote = dao.overview(key.accountId, owner, repo, key.number)?.pendingReviewBody.orEmpty()
-    db.withWriteTransaction {
-      val local = dao.draftReview(key.accountId, owner, repo, key.number)?.summary.orEmpty()
-      setSummary(key, local.ifBlank { remote })
-    }
+    val draft = DraftKey.summary(key)
+    val pending = dao.overview(key.accountId, key.repo.owner, key.repo.name, key.number) ?: return
+    drafts.continueReview(
+      draft,
+      pending.pendingReviewId ?: return,
+      pending.pendingReviewBody.orEmpty(),
+    )
   }
 
   /**
@@ -510,64 +480,58 @@ class PullRequestChangesRepository(
     }
   }
 
-  /**
-   * Replies to thread [threadId] at once, as when there's no pending review. The reply shows as
-   * sending at once and becomes the forge's comment once it has it; only then is the draft at
-   * [draft] deleted. If the forge refuses, the reply disappears, the draft stays, and [failures]
-   * says why.
-   */
-  suspend fun reply(key: PullRequestKey, threadId: String, body: String, draft: DraftKey) {
-    drafts.save(draft, body)
-    val account = db.accounts().get(key.accountId)
-    val placeholder =
-      ChangesThreadCommentEntity(
-        accountId = key.accountId,
-        id = "sending:${clock.now().toEpochMilliseconds()}:${placeholders++}",
-        threadId = threadId,
-        authorLogin = account?.login,
-        authorAvatarUrl = account?.avatarUrl,
-        body = body,
-        createdAt = clock.now().toEpochMilliseconds(),
-        position = dao.nextCommentPosition(key.accountId, threadId),
-        state = CommentState.Sending,
-      )
-    db.withWriteTransaction {
-      sendingReplies += placeholder.id
-      dao.upsertThreadComments(listOf(placeholder))
-    }
-    scope.launch {
-      runCatching { api(key).reply(threadId, body) }
-        .onSuccess { comment ->
-          db.withWriteTransaction {
-            sendingReplies -= placeholder.id
-            dao.deleteThreadComment(key.accountId, placeholder.id)
-            if (dao.thread(key.accountId, threadId) != null) {
-              dao.upsertThreadComments(
-                listOf(
-                  placeholder.copy(
-                    id = comment.id,
-                    authorLogin = comment.authorLogin,
-                    authorAvatarUrl = comment.authorAvatarUrl,
-                    body = comment.body,
-                    createdAt = comment.createdAt.toEpochMilliseconds(),
-                    state = if (comment.pending) CommentState.Pending else CommentState.Published,
-                  ),
-                ),
-              )
-            }
-          }
-          if (drafts.get(draft) == body) drafts.delete(draft)
+  /** An immediate reply uses the same app-scoped claim as a batch review. */
+  fun reply(key: PullRequestKey, draft: DraftKey): kotlinx.coroutines.Deferred<Boolean> =
+    drafts.submit(listOf(draft)) { rows ->
+      val row = rows.single()
+      val threadId = checkNotNull(row.inReplyTo)
+      val account = db.accounts().get(key.accountId)
+      val placeholder =
+        ChangesThreadCommentEntity(
+          key.accountId,
+          "sending:${clock.now().toEpochMilliseconds()}:${placeholders++}",
+          threadId,
+          account?.login,
+          account?.avatarUrl,
+          row.body,
+          clock.now().toEpochMilliseconds(),
+          dao.nextCommentPosition(key.accountId, threadId),
+          CommentState.Sending,
+        )
+      db.withWriteTransaction {
+        sendingReplies += placeholder.id
+        dao.upsertThreadComments(listOf(placeholder))
+      }
+      try {
+        val comment = drafts.deliverAccepted(rows) { api(key).reply(threadId, row.body) }
+        db.withWriteTransaction {
+          sendingReplies -= placeholder.id
+          dao.deleteThreadComment(key.accountId, placeholder.id)
+          val confirmed =
+            placeholder.copy(
+              id = comment.id,
+              authorLogin = comment.authorLogin,
+              authorAvatarUrl = comment.authorAvatarUrl,
+              body = comment.body,
+              createdAt = comment.createdAt.toEpochMilliseconds(),
+              state = if (comment.pending) CommentState.Pending else CommentState.Published,
+            )
+          confirmations[key to comment.id] = ++confirmationSequence
+          if (dao.thread(key.accountId, threadId) != null)
+            dao.upsertThreadComments(listOf(confirmed))
         }
-        .onFailure {
-          db.withWriteTransaction {
-            sendingReplies -= placeholder.id
-            dao.deleteThreadComment(key.accountId, placeholder.id)
-          }
-          _failures.tryEmit("Couldn't reply: ${it.message}")
+      } catch (e: Exception) {
+        db.withWriteTransaction {
+          sendingReplies -= placeholder.id
+          dao.deleteThreadComment(key.accountId, placeholder.id)
         }
+        _failures.tryEmit("Couldn't reply: ${e.message}")
+        throw e
+      }
     }
-  }
 
+  private var confirmationSequence = 0L
+  private val confirmations = HashMap<Pair<PullRequestKey, String>, Long>()
   private var placeholders = 0
   /** Guarded by Room transactions; an orphaned sending row is dropped on the next refresh. */
   private val sendingReplies = HashSet<String>()
@@ -608,18 +572,6 @@ class PullRequestChangesRepository(
   /** Guarded by Room's write transaction; a thread's action stays disabled until it settles. */
   private val resolving = HashMap<Pair<PullRequestKey, String>, Boolean>()
 
-  /** Where an edit to pending comment [id] is drafted until it's saved back into the review. */
-  fun pendingEditKey(key: PullRequestKey, id: Long) =
-    DraftKey(key.accountId, key.repo, key.number, "$PENDING_EDIT_SLOT$id")
-
-  /** Deletes pending comment [id], and any edit drafted for it. */
-  suspend fun deleteDraft(key: PullRequestKey, id: Long) {
-    db.withWriteTransaction {
-      dao.deleteDraft(id)
-      drafts.delete(pendingEditKey(key, id))
-    }
-  }
-
   private suspend fun api(key: PullRequestKey): PullRequestReviews {
     val client = clients.client(key.accountId) ?: error("This account is signed out")
     return client.pullRequestReviews ?: error("This forge can't review PRs here yet")
@@ -643,23 +595,3 @@ class PullRequestChangesRepository(
       at,
     )
 }
-
-/** Draft slots for edits to pending review comments: the comment's id follows. */
-const val PENDING_EDIT_SLOT = "review/edit:"
-
-private fun DraftCommentEntity.toDraft() =
-  DraftComment(
-    id = id,
-    anchor =
-      ReviewAnchor(
-        commitOid = commitOid,
-        path = path,
-        side = DiffSide.valueOf(side),
-        startLine = startLine,
-        endLine = endLine,
-        startSide = DiffSide.valueOf(startSide),
-      ),
-    body = body,
-    updatedAt = updatedAt,
-    inReplyTo = inReplyTo,
-  )

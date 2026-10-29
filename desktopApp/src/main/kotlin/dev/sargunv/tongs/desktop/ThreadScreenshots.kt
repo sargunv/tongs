@@ -5,7 +5,6 @@ import androidx.compose.ui.unit.Density
 import dev.sargunv.tongs.app.TongsApp
 import dev.sargunv.tongs.app.createAppGraph
 import dev.sargunv.tongs.core.data.AppEnvironment
-import dev.sargunv.tongs.core.data.DraftEntity
 import dev.sargunv.tongs.core.data.DraftKey
 import dev.sargunv.tongs.core.data.InMemoryTokenStore
 import dev.sargunv.tongs.core.data.openDatabase
@@ -97,20 +96,7 @@ fun renderThreadScreenshots(
     routes.firstOrNull()?.let { route ->
       runBlocking {
         val key = DraftKey(account, route.repo, route.number!!)
-        db
-          .drafts()
-          .upsert(
-            DraftEntity(
-              account,
-              key.value,
-              route.repo.owner,
-              route.repo.name,
-              route.number!!,
-              key.slot,
-              DRAFT,
-              0,
-            ),
-          )
+        graph.drafts.save(key, DRAFT)
       }
       add(
         Triple("desktop-composer", listOf(Route.Inbox, route, Route.ThreadReply(route)), 8.seconds),

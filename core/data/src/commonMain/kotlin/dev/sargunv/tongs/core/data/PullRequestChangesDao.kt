@@ -5,7 +5,6 @@ import androidx.room3.Dao
 import androidx.room3.Entity
 import androidx.room3.ForeignKey
 import androidx.room3.Index
-import androidx.room3.PrimaryKey
 import androidx.room3.Query
 import androidx.room3.Upsert
 import kotlinx.coroutines.flow.Flow
@@ -76,64 +75,6 @@ data class ViewedFileEntity(
   val blobOid: String,
   val viewed: Boolean,
   val pending: Boolean,
-  val updatedAt: Long,
-)
-
-/**
- * A comment in the pending review, drafted here until the review is submitted: a line comment, with
- * the forge-neutral `ReviewAnchor`, or a reply to thread [inReplyTo], whose anchor is the thread's.
- */
-@Entity(
-  tableName = "changes_draft_comment",
-  foreignKeys =
-    [
-      ForeignKey(
-        entity = AccountEntity::class,
-        parentColumns = ["id"],
-        childColumns = ["accountId"],
-        onDelete = ForeignKey.CASCADE,
-      ),
-    ],
-  indices = [Index("accountId", "owner", "repo", "number")],
-)
-data class DraftCommentEntity(
-  @PrimaryKey(autoGenerate = true) val id: Long = 0,
-  val accountId: Long,
-  val owner: String,
-  val repo: String,
-  val number: Int,
-  val commitOid: String,
-  val path: String,
-  val side: String,
-  val startSide: String,
-  val startLine: Int,
-  val endLine: Int,
-  val body: String,
-  val createdAt: Long,
-  val updatedAt: Long,
-  val inReplyTo: String? = null,
-)
-
-/** The pending review's summary, kept as it's typed. */
-@Entity(
-  tableName = "changes_draft_review",
-  primaryKeys = ["accountId", "owner", "repo", "number"],
-  foreignKeys =
-    [
-      ForeignKey(
-        entity = AccountEntity::class,
-        parentColumns = ["id"],
-        childColumns = ["accountId"],
-        onDelete = ForeignKey.CASCADE,
-      ),
-    ],
-)
-data class DraftReviewEntity(
-  val accountId: Long,
-  val owner: String,
-  val repo: String,
-  val number: Int,
-  val summary: String,
   val updatedAt: Long,
 )
 
@@ -300,84 +241,6 @@ interface PullRequestChangesDao {
     path: String,
     blobOid: String,
   )
-
-  @Query(
-    """
-    SELECT * FROM changes_draft_comment
-    WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
-    ORDER BY path, endLine, id
-    """,
-  )
-  fun observeDrafts(
-    accountId: Long,
-    owner: String,
-    repo: String,
-    number: Int,
-  ): Flow<List<DraftCommentEntity>>
-
-  @Query(
-    """
-    SELECT * FROM changes_draft_comment
-    WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
-    ORDER BY path, endLine, id
-    """,
-  )
-  suspend fun drafts(
-    accountId: Long,
-    owner: String,
-    repo: String,
-    number: Int,
-  ): List<DraftCommentEntity>
-
-  @Upsert suspend fun upsertDraft(draft: DraftCommentEntity): Long
-
-  @Query("SELECT * FROM changes_draft_comment WHERE id = :id")
-  suspend fun draft(id: Long): DraftCommentEntity?
-
-  @Query("DELETE FROM changes_draft_comment WHERE id = :id") suspend fun deleteDraft(id: Long)
-
-  @Query(
-    """
-    DELETE FROM changes_draft_comment WHERE id = :id AND updatedAt = :updatedAt AND body = :body
-    """,
-  )
-  suspend fun deleteDraftIfUnchanged(id: Long, updatedAt: Long, body: String)
-
-  @Query(
-    """
-    SELECT * FROM changes_draft_review
-    WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
-    """,
-  )
-  fun observeDraftReview(
-    accountId: Long,
-    owner: String,
-    repo: String,
-    number: Int,
-  ): Flow<DraftReviewEntity?>
-
-  @Query(
-    """
-    SELECT * FROM changes_draft_review
-    WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
-    """,
-  )
-  suspend fun draftReview(
-    accountId: Long,
-    owner: String,
-    repo: String,
-    number: Int,
-  ): DraftReviewEntity?
-
-  @Upsert suspend fun upsertDraftReview(review: DraftReviewEntity)
-
-  @Query(
-    """
-    DELETE FROM changes_draft_review
-    WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
-    """,
-  )
-  suspend fun deleteDraftReview(accountId: Long, owner: String, repo: String, number: Int)
 
   @Query(
     """

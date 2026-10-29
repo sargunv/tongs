@@ -139,7 +139,8 @@ class PostingTest {
     threads.refresh(ref)
     drafts.save(ref.replyDraft, "Thanks!\n\n> quoted")
 
-    threads.comment(ref, "Thanks!\n\n> quoted")
+    drafts.save(ref.replyDraft, "Thanks!\n\n> quoted")
+    threads.comment(ref)
     until { drafts.get(ref.replyDraft) == null }
 
     val (operation, variables) = received.last()
@@ -153,9 +154,10 @@ class PostingTest {
 
   @Test
   fun closingWithACommentPostsClosesAndRefetches() = runBlocking {
-    val (threads, _, ref) = setUp()
+    val (threads, drafts, ref) = setUp()
     threads.refresh(ref)
-    threads.comment(ref, "Fixed in #10", close = StateReason.Completed)
+    drafts.save(ref.replyDraft, "Fixed in #10")
+    threads.comment(ref, close = StateReason.Completed)
     until { synchronized(received) { received.count { it.first == "Thread" } } == 2 }
     until { threads.observe(ref).first()!!.detail.state == ThreadState.Closed }
 
@@ -173,7 +175,8 @@ class PostingTest {
     var failure: String? = null
     val collecting = scope.launchCollect(threads) { failure = it }
 
-    threads.comment(ref, "Thanks!")
+    drafts.save(ref.replyDraft, "Thanks!")
+    threads.comment(ref)
     until { failure != null }
 
     assertTrue(failure!!.contains("Your draft is saved"), failure)

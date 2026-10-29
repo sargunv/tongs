@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asSkiaBitmap
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithText
@@ -24,7 +25,9 @@ import dev.sargunv.tongs.forge.api.Actor
 import dev.sargunv.tongs.forge.api.ReviewState
 import dev.sargunv.tongs.forge.api.TimelineItem
 import io.github.takahirom.roborazzi.captureRoboImage
+import java.io.File
 import kotlin.test.Test
+import org.jetbrains.skia.Image
 
 /** Desktop screenshots of the thread and its composer, from made-up data. */
 @OptIn(ExperimentalTestApi::class)
@@ -150,8 +153,15 @@ class ThreadScreenshotTest {
 
   @Test fun composerDark() = composer("composer-dark", dark = true)
 
-  private fun composer(name: String, dark: Boolean) =
-    runDesktopComposeUiTest(width = 420, height = 640) {
+  @Test fun composerFolded() = composer("composer-360", dark = false, width = 360, golden = false)
+
+  @Test fun composerUnfolded() = composer("composer-700", dark = false, width = 700, golden = false)
+
+  @Test
+  fun composerDesktop() = composer("composer-1200", dark = false, width = 1200, golden = false)
+
+  private fun composer(name: String, dark: Boolean, width: Int = 420, golden: Boolean = true) =
+    runDesktopComposeUiTest(width = width, height = 640) {
       setContent {
         TongsTheme(darkTheme = dark) {
           val state = rememberPreviewComposerState(REPLY_TEXT, DraftKey(1, Fixtures.repo, 412))
@@ -161,13 +171,24 @@ class ThreadScreenshotTest {
             number = 412,
             repo = Fixtures.repo.toString(),
             webUrl = "https://github.com",
-            onSend = { _, _, _ -> },
+            onSend = { _, _ -> },
             onClose = {},
           )
         }
       }
       waitForIdle()
-      onRoot().captureRoboImage("src/jvmTest/snapshots/$name.png")
+      onNodeWithText("Comment").assertIsDisplayed()
+      if (golden) onRoot().captureRoboImage("src/jvmTest/snapshots/$name.png")
+      else {
+        val output = File("build/reports/drafts/thread-$name.png")
+        output.parentFile.mkdirs()
+        output.writeBytes(
+          checkNotNull(
+              Image.makeFromBitmap(onRoot().captureToImage().asSkiaBitmap()).encodeToData(),
+            )
+            .bytes,
+        )
+      }
     }
 }
 

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,8 +33,7 @@ import dev.sargunv.tongs.engine.RowKind
 /**
  * What a composer edits: one comment, with where it goes for context.
  *
- * @property draftKey where the text autosaves while it's written; [initialBody] is the text to
- *   start from when there's no draft there, as an edited pending comment's.
+ * @property draftKey the one row edited here, including when it is already part of a review.
  * @property title what the comment is on, like `Lines 12–14 of Map.kt`.
  * @property suggestion the selected lines as they are, for "Suggest change" to prefill as a
  *
@@ -44,19 +42,18 @@ import dev.sargunv.tongs.engine.RowKind
  * @property context resolves references in the preview, and holds the lines a suggestion changes.
  * @property quoted the lines, for a composer that covers the diff; empty where the diff stays in
  *   sight.
- * @property onSubmit gets the text once the composer has stopped autosaving it.
+ * @property onSubmit changes membership or submits the same persisted draft.
  */
 class CommentRequest(
   val draftKey: DraftKey,
   val drafts: DraftRepository,
-  val initialBody: String,
   val title: String,
   val subtitle: String?,
   val context: MarkdownContext,
   val suggestion: String?,
   val quoted: List<QuotedLine>,
   val submitLabel: String,
-  val onSubmit: (body: String) -> Unit,
+  val onSubmit: () -> Unit,
   val onClose: () -> Unit,
 )
 
@@ -80,7 +77,7 @@ fun suggestionBlock(lines: String): String = "```suggestion\n$lines\n```\n"
 object MarkdownCommentComposer : CommentComposer {
   @Composable
   override fun Content(request: CommentRequest, modifier: Modifier) {
-    val state = rememberComposerState(request.draftKey, request.drafts, request.initialBody)
+    val state = rememberComposerState(request.draftKey, request.drafts)
     val actions = buildList {
       request.suggestion?.let { lines ->
         add(
@@ -89,7 +86,7 @@ object MarkdownCommentComposer : CommentComposer {
             onClick = {
               val text = state.text.text.toString()
               val prefix = if (text.isBlank()) "" else "${text.trimEnd()}\n\n"
-              state.text.setTextAndPlaceCursorAtEnd(prefix + suggestionBlock(lines))
+              state.replaceText(prefix + suggestionBlock(lines))
             },
             icon = ConversationIcons.Code,
             allowsEmpty = true,
@@ -100,8 +97,7 @@ object MarkdownCommentComposer : CommentComposer {
         ComposerAction(
           request.submitLabel,
           onClick = {
-            state.markSent()
-            request.onSubmit(it)
+            request.onSubmit()
           },
           icon = ConversationIcons.Send,
           primary = true,

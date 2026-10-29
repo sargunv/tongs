@@ -109,6 +109,61 @@ class ChangesControllerTest {
     until { view.offsetY > 0 }
     assertEquals(17.0, view.offsetY) // Annotation at row 20, with three rows of context.
   }
+
+  @Test
+  fun draftsOnMissingFilesRemainEditableInTheInventory() = runBlocking {
+    val controller = controller()
+    val key = controller.key
+    val draft =
+      DraftKey(
+        key.accountId,
+        key.repo,
+        key.number,
+        "gone",
+        DraftDestination.LineComment,
+        ReviewAnchor("headA", "gone.kt", DiffSide.New, 3, 3),
+      )
+    drafts.save(draft, "Text on a file that left the diff")
+    until { controller.allDrafts.any { it.draftKey == draft } }
+    assertEquals(-1, controller.fileIndex("gone.kt"))
+    val row = controller.allDrafts.single { it.draftKey == draft }
+    assertFalse(row.inReview)
+    controller.editDraft(row)
+    val target = controller.composer as ComposerTarget.Line
+    assertEquals("headA", target.commitOid)
+    assertEquals(draft, controller.draftKey(target))
+    assertNull(target.suggestion)
+    controller.deleteDraft(row)
+    until { controller.allDrafts.none { it.id == row.id } }
+    assertEquals(draft, controller.draftKey(target))
+
+    // Migrated replies retain their existing key, rather than copying to the new-reply slot.
+    val reply =
+      draft.copy(
+        slot = "review/comment:42",
+        destination = DraftDestination.ReviewReply,
+        anchor = null,
+        threadId = "thread1",
+      )
+    drafts.save(reply, "Existing reply")
+    until { controller.allDrafts.any { it.draftKey == reply } }
+    controller.editDraft(controller.allDrafts.single { it.draftKey == reply })
+    assertEquals(reply, controller.draftKey(checkNotNull(controller.composer)))
+  }
+
+  @Test
+  fun editingAnOlderPendingSuggestionNeverQuotesTheNewHeadsLines() = runBlocking {
+    val controller = controller()
+    val row = controller.drafts.single()
+    // The snapshot has text at these line numbers, but comes from a later head.
+    loader.startReview("base", "headB")
+    controller.editDraft(row)
+    val target = controller.composer as ComposerTarget.Line
+    assertEquals("head1", target.commitOid)
+    assertNull(target.suggestion)
+    assertTrue(target.quoted.isEmpty())
+    assertTrue(controller.draftLabel(row).contains("Outdated"))
+  }
 }
 
 private class TestSnapshot(private val layout: ReviewLayout? = null) : ReviewSnapshot {

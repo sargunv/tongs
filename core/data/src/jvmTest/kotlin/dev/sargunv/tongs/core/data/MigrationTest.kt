@@ -56,6 +56,66 @@ class MigrationTest {
   }
 
   @Test
+  fun versionSevenFoldsEditsAndSummariesIntoTypedDraftsWithoutGuessingACommit() = runTest {
+    val dir = createTempDirectory("tongs-drafts-migration").toFile()
+    try {
+      val path = dir.resolve("tongs.db").path
+      createAt(
+        path,
+        7,
+        """INSERT INTO account (id, forge, webUrl, apiUrl, userId, login, authMethod, capabilities, missingScopes)
+          VALUES (1, 'GitHub', 'https://github.com', 'https://api.github.com', 'U_1', 'me', 'ClassicToken', '', '')""",
+        """INSERT INTO changes_pr (accountId, owner, repo, number, nodeId, title, state, headOid, webUrl,
+          viewerDidAuthor, viewerReviewRequested, viewerHasPendingReview, pendingReviewId, syncedAt)
+          VALUES (1, 'octo', 'hello', 7, 'PR1', '', 'open', 'currentHead', '', 0, 0, 1, 'R_web', 1)""",
+        """INSERT INTO changes_draft_comment (id, accountId, owner, repo, number, commitOid, path,
+          side, startSide, startLine, endLine, body, createdAt, updatedAt, inReplyTo) VALUES
+          (12, 1, 'octo', 'hello', 7, 'headA', 'gone.kt', 'New', 'Old', 3, 7, 'Old wording', 1, 1, NULL),
+          (13, 1, 'octo', 'hello', 7, 'headB', 'a.kt', 'New', 'New', 4, 4, 'Reply', 1, 1, 'T1')""",
+        """INSERT INTO changes_draft_review VALUES (1, 'octo', 'hello', 7, 'Summary', 2)""",
+        """INSERT INTO draft VALUES
+          (1, 'octo/hello#7/review/edit:12', 'octo', 'hello', 7, 'review/edit:12', 'New wording', 3),
+          (1, 'octo/hello#7/review/line:headA:o3-n7:src/a:b.kt', 'octo', 'hello', 7,
+            'review/line:headA:o3-n7:src/a:b.kt', 'Unsent line', 2),
+          (1, 'octo/hello#7/review/a.kt:3', 'octo', 'hello', 7, 'review/a.kt:3', 'Anchor unknown', 1),
+          (1, 'octo/hello#7/review/reply:T2', 'octo', 'hello', 7, 'review/reply:T2', 'Unsent reply', 2),
+          (1, 'octo/hello#7/reply', 'octo', 'hello', 7, 'reply', 'Conversation', 2)""",
+      )
+      val db = openDatabase(path)
+      try {
+        val rows = db.drafts().all(1, "octo", "hello", 7)
+        assertEquals(7, rows.size)
+        val edited = rows.single { it.id == 12L }
+        assertEquals("New wording", edited.body)
+        assertEquals("headA", edited.commitOid)
+        assertEquals("gone.kt", edited.path)
+        assertEquals("Old", edited.startSide)
+        kotlin.test.assertTrue(edited.inReview)
+        assertEquals(DraftDestination.LineComment, edited.destination)
+        val reply = rows.single { it.id == 13L }
+        assertEquals(DraftDestination.ReviewReply, reply.destination)
+        assertEquals("T1", reply.inReplyTo)
+        assertNull(reply.commitOid)
+        val summary = rows.single { it.destination == DraftDestination.Summary }
+        assertEquals("Summary", summary.body)
+        assertEquals("R_web", summary.continuedReviewId)
+        val line = rows.single { it.body == "Unsent line" }
+        assertEquals("headA", line.commitOid)
+        assertEquals("src/a:b.kt", line.path)
+        assertEquals(3, line.startLine)
+        assertEquals(7, line.endLine)
+        assertFalse(line.inReview)
+        assertNull(rows.single { it.body == "Anchor unknown" }.commitOid)
+        kotlin.test.assertTrue(rows.none { it.slot.startsWith("review/edit:") })
+      } finally {
+        db.close()
+      }
+    } finally {
+      dir.deleteRecursively()
+    }
+  }
+
+  @Test
   fun reviewColumnsKeepExistingChangesAndDefaultToUnknown() = runTest {
     val dir = createTempDirectory("tongs-review-migration").toFile()
     try {
@@ -105,7 +165,7 @@ class MigrationTest {
         assertNull(overview.pendingReviewId)
         assertNull(overview.pendingReviewBody)
         assertEquals(0, overview.pendingReviewComments)
-        val draft = dao.draft(1)!!
+        val draft = db.drafts().byId(1)!!
         assertEquals("Keep me", draft.body)
         assertEquals("head1", draft.commitOid)
         assertNull(draft.inReplyTo)
@@ -145,6 +205,7 @@ class MigrationTest {
       )
       val db =
         Room.databaseBuilder<TongsDatabase>(path, factory = TongsDatabaseConstructor::initialize)
+          .addMigrations(DraftsMigration)
           .setDriver(BundledSQLiteDriver())
           .build()
       try {
@@ -182,6 +243,7 @@ class MigrationTest {
       )
       val db =
         Room.databaseBuilder<TongsDatabase>(path, factory = TongsDatabaseConstructor::initialize)
+          .addMigrations(DraftsMigration)
           .setDriver(BundledSQLiteDriver())
           .build()
       try {
@@ -219,6 +281,7 @@ class MigrationTest {
       )
       val db =
         Room.databaseBuilder<TongsDatabase>(path, factory = TongsDatabaseConstructor::initialize)
+          .addMigrations(DraftsMigration)
           .setDriver(BundledSQLiteDriver())
           .build()
       try {

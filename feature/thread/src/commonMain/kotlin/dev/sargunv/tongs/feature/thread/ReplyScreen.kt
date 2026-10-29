@@ -27,9 +27,9 @@ fun ReplyScreen(viewModel: ReplyViewModel, onClose: () -> Unit) {
     number = viewModel.ref.number,
     repo = viewModel.ref.repo.toString(),
     webUrl = webUrl,
-    onSend = { body, close, reopen ->
-      state.markSent()
-      if (viewModel.send(body, close, reopen)) onClose()
+    onSend = { close, reopen ->
+      viewModel.send(close, reopen)
+      onClose()
     },
     onClose = onClose,
   )
@@ -43,7 +43,7 @@ fun ReplyContent(
   number: Int,
   repo: String,
   webUrl: String,
-  onSend: (body: String, close: Boolean, reopen: Boolean) -> Unit,
+  onSend: (close: Boolean, reopen: Boolean) -> Unit,
   onClose: () -> Unit,
 ) {
   val context = remember(webUrl, detail?.repo) { MarkdownContext(webUrl, detail?.repo) }
@@ -54,7 +54,7 @@ fun ReplyContent(
       add(
         ComposerAction(
           label = if (blank) "Close $noun" else "Close with comment",
-          onClick = { onSend(it, true, false) },
+          onClick = { onSend(true, false) },
           icon = ConversationIcons.CheckCircle,
           allowsEmpty = true,
         ),
@@ -64,7 +64,7 @@ fun ReplyContent(
       add(
         ComposerAction(
           label = if (blank) "Reopen" else "Reopen with comment",
-          onClick = { onSend(it, false, true) },
+          onClick = { onSend(false, true) },
           icon = TongsIcons.Undo,
           allowsEmpty = true,
         ),
@@ -73,7 +73,7 @@ fun ReplyContent(
     add(
       ComposerAction(
         label = "Comment",
-        onClick = { onSend(it, false, false) },
+        onClick = { onSend(false, false) },
         icon = ConversationIcons.Send,
         primary = true,
         enabled = detail?.viewer?.canComment != false,

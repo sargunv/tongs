@@ -34,8 +34,8 @@ import kotlin.time.Instant
 /**
  * One notification: the repo and when, the title, then GitHub's reason and what's new since you
  * last read it. The icon's color is the subject's state, and an open PR's checks and review
- * decision follow the reason line as small marks. A thread read or done elsewhere says so beside
- * its time.
+ * decision follow the reason line as small marks. A thread read or done elsewhere says so at the
+ * end of the reason line.
  */
 @Composable
 internal fun InboxRowItem(
@@ -69,20 +69,7 @@ internal fun InboxRowItem(
           Text(" ${snoozeTime(Instant.fromEpochMilliseconds(snoozed), now)}")
         }
       } else {
-        val age = shortAge(row.sortAt, now.toEpochMilliseconds())
-        if (row.readElsewhere) {
-          // Quiet, like the time beside it: GitHub can't say whether it was read or done there,
-          // so the row stays until it's done here.
-          Text(
-            "$READ_ELSEWHERE · $age",
-            modifier =
-              Modifier.semantics {
-                contentDescription = "$READ_ELSEWHERE, or marked done there · $age"
-              },
-          )
-        } else {
-          Text(age)
-        }
+        Text(shortAge(row.sortAt, now.toEpochMilliseconds()))
       }
     },
     headline = row.title,
@@ -119,6 +106,12 @@ private fun SupportingLine(row: InboxRow, colors: StateColors) {
         whatsNewAfterReason(row)?.let {
           append(" · ")
           append(it)
+        }
+        // Quiet, in the line's own color: GitHub can't say whether it was read or done there, so
+        // the row stays until it's done here. Last, so it wraps rather than crowding the repo.
+        if (row.readElsewhere) {
+          append(" · ")
+          append(READ_ELSEWHERE)
         }
       },
       // What's new is the point of the line; give it a second line before cutting it off.

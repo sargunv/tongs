@@ -543,7 +543,8 @@ express that, so its adapter will have to narrow such a range.
     color is the subject's state (open green, merged purple, closed red, draft
     gray; issues closed as completed purple, not planned gray). An open PR's
     checks and review decision follow as small marks. A thread read or done
-    elsewhere says "Read elsewhere" beside its time, in the time's muted color.
+    elsewhere ends its reason line with "Read elsewhere", in the line's muted
+    color, so it wraps rather than crowding the repo on a phone.
     `InboxRow.draft` is the seam for reply drafts, always null until the thread
     feature stores them.
   - Filters use GitHub's vocabulary (`reason:`, `is:pr`, `is:issue`,

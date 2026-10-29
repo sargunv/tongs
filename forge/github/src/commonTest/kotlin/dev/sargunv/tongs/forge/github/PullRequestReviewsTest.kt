@@ -268,8 +268,30 @@ class PullRequestReviewsTest {
     assertEquals("4", add.str("startLine"))
     val submit = graphql(2).getValue("variables").jsonObject
     assertEquals("REQUEST_CHANGES", submit.str("event"))
-    assertTrue("body" !in submit)
+    assertEquals("", submit.str("body"))
     assertEquals("DeletePendingReview", graphql(3).str("operationName"))
+  }
+
+  @Test
+  fun explicitlyClearsPendingSummaryWhenApprovingOrCommenting() = runTest {
+    val reviews = reviews { _, _ ->
+      HttpStatusCode.OK to
+        """{"data": {"submitPullRequestReview": {"pullRequestReview": {"id": "R_1"}}}}"""
+    }
+    for (event in listOf(ReviewEvent.Approve, ReviewEvent.Comment)) {
+      for (body in listOf("", " \n")) {
+        reviews.submitPendingReview("R_1", event, body)
+        val request = Json.parseToJsonElement(requests.last().second).jsonObject
+        assertEquals("SubmitPendingReview", request.str("operationName"))
+        val variables = request.getValue("variables").jsonObject
+        assertEquals("R_1", variables.str("reviewId"))
+        assertEquals(
+          if (event == ReviewEvent.Approve) "APPROVE" else "COMMENT",
+          variables.str("event"),
+        )
+        assertEquals(body, variables.str("body"))
+      }
+    }
   }
 
   @Test

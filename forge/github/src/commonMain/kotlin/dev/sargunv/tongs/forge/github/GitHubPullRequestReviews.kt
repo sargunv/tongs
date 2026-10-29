@@ -305,7 +305,7 @@ class GitHubPullRequestReviews(
           ReviewEvent.Approve -> PullRequestReviewEvent.APPROVE
           ReviewEvent.RequestChanges -> PullRequestReviewEvent.REQUEST_CHANGES
         },
-        Optional.presentIfNotNull(body.takeIf { it.isNotBlank() }),
+        Optional.present(body),
       ),
     )
   }

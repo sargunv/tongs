@@ -3,16 +3,21 @@ package dev.sargunv.tongs.feature.review
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -27,6 +32,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -39,10 +45,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.sargunv.tongs.core.data.ReviewThreadWithComments
+import dev.sargunv.tongs.core.ui.ActionIcon
 import dev.sargunv.tongs.core.ui.ReviewIcons
+import dev.sargunv.tongs.core.ui.TongsIcons
 import dev.sargunv.tongs.forge.api.ReviewEvent
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.drop
 
 /**
  * Finishing the pending review: a summary, the verdict, and submit. The summary saves as it's
@@ -56,14 +64,23 @@ fun ReviewForm(
   onSubmitted: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  val summary = rememberTextFieldState(controller.summary)
+  val summary = rememberTextFieldState(controller.summary.orEmpty())
+  val sync = remember { SummarySync() }
+  LaunchedEffect(controller.summary) {
+    sync
+      .adopt(controller.summary, summary.text.toString())
+      ?.let(summary::setTextAndPlaceCursorAtEnd)
+  }
   LaunchedEffect(summary) {
-    snapshotFlow { summary.text.toString() }.drop(1).debounce(300).collect(controller::saveSummary)
+    snapshotFlow { summary.text.toString() }
+      .debounce(300)
+      .collect { if (sync.shouldSave(it)) controller.saveSummary(it) }
   }
   val own = controller.overview?.viewerDidAuthor == true
   var event by remember { mutableStateOf(if (own) ReviewEvent.Comment else initialEvent) }
   var sending by remember { mutableStateOf(false) }
-  val pending = controller.drafts.size
+  val pending = controller.pendingCount
+  val elsewhere = controller.overview?.pendingReviewComments ?: 0
   val body = summary.text.toString()
   // Forges want words for a comment or a change request that has no line comments.
   val canSend =
@@ -79,7 +96,7 @@ fun ReviewForm(
         0 -> "No pending comments"
         1 -> "1 pending comment"
         else -> "$pending pending comments"
-      },
+      } + if (elsewhere > 0) ", $elsewhere from a review started elsewhere" else "",
       style = MaterialTheme.typography.labelLarge,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -143,10 +160,8 @@ fun ReviewForm(
           sending = true
           controller.submit(event, body) { ok ->
             sending = false
-            if (ok) {
-              summary.edit { replace(0, length, "") }
-              onSubmitted()
-            }
+            // The stored summary is gone now, and the field follows it.
+            if (ok) onSubmitted()
           }
         },
         enabled = canSend,
@@ -176,7 +191,8 @@ fun FinishReviewDialog(
 
 /**
  * The desktop's third pane: your pending review, with its comments and the form to finish it, then
- * the PR's existing threads. Picking either jumps the diff to it.
+ * the PR's existing threads. Picking either jumps the diff to it. While a comment is being written,
+ * the composer takes the pane.
  */
 @Composable
 fun ReviewSidePane(
@@ -186,25 +202,28 @@ fun ReviewSidePane(
   modifier: Modifier = Modifier,
 ) {
   val composer = controller.composer
-  LazyColumn(modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)) {
-    if (composer != null && controller.composerRows == 0) {
-      item(key = "composer") {
-        LocalCommentComposer.current.Content(
-          controller.commentRequest(composer),
-          Modifier.fillMaxWidth(),
-        )
-      }
+  if (composer != null) {
+    key(composer) {
+      LocalCommentComposer.current.Content(
+        controller.commentRequest(composer, quote = false),
+        modifier,
+      )
     }
+    return
+  }
+  LazyColumn(modifier, contentPadding = PaddingValues(16.dp)) {
     item(key = "review") {
       Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         PaneHeading("Your review")
         for (draft in controller.drafts) {
           val item =
             controller.items.values.firstOrNull {
-              it is InlineItem.Draft && it.draft.id == draft.id
+              (it is InlineItem.Draft && it.draft.id == draft.id) ||
+                (it is InlineItem.Thread && it.thread.thread.id == draft.inReplyTo)
             }
+          val where = "${draft.anchor.path.substringAfterLast('/')}:${draft.anchor.endLine}"
           ListCard(
-            title = "${draft.anchor.path.substringAfterLast('/')}:${draft.anchor.endLine}",
+            title = if (draft.inReplyTo != null) "Reply on $where" else where,
             body = draft.body,
             onClick = { item?.let(controller::jumpTo) },
           )
@@ -233,7 +252,7 @@ fun ReviewSidePane(
           shape = MaterialTheme.shapes.medium,
           modifier = Modifier.fillMaxWidth().padding(top = 8.dp).clickable { onSelectThread(null) },
         ) {
-          ThreadDetail(thread, Modifier.padding(12.dp))
+          ThreadDetail(thread, controller, Modifier.padding(12.dp))
         }
       } else {
         ListCard(
@@ -247,6 +266,8 @@ fun ReviewSidePane(
                 .joinToString(""),
           body = first?.body.orEmpty(),
           dim = t.isResolved || t.isOutdated,
+          // Resolved threads stay folded to their title until picked.
+          maxLines = if (t.isResolved) 0 else 3,
           onClick = {
             onSelectThread(t.id)
             controller.items.values
@@ -259,13 +280,104 @@ fun ReviewSidePane(
   }
 }
 
+/**
+ * A thread on its own, with a header to close it: the pane beside the diff on an unfolded phone.
+ */
+@Composable
+fun ThreadPane(
+  thread: ReviewThreadWithComments,
+  controller: ChangesController,
+  onClose: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  Column(modifier) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 4.dp),
+    ) {
+      ActionIcon(TongsIcons.Close, "Close", onClose)
+      Text(
+        "Thread",
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.padding(start = 4.dp),
+      )
+    }
+    ThreadDetail(
+      thread,
+      controller,
+      Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+    )
+  }
+}
+
+/**
+ * A review left pending on the forge by another client: GitHub allows one per PR, so it has to be
+ * continued here or discarded before this one can go out.
+ */
+@Composable
+fun PendingReviewBanner(controller: ChangesController, modifier: Modifier = Modifier) {
+  val overview = controller.overview ?: return
+  if (overview.pendingReviewId == null || controller.reviewStarted) return
+  var confirming by remember { mutableStateOf(false) }
+  val n = overview.pendingReviewComments
+  Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = modifier.fillMaxWidth()) {
+    FlowRow(
+      verticalArrangement = Arrangement.Center,
+      itemVerticalAlignment = Alignment.CenterVertically,
+      modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+    ) {
+      Text(
+        "You have a pending review from another client" +
+          (if (n == 1) ", with 1 comment" else if (n > 1) ", with $n comments" else ""),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onTertiaryContainer,
+        modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+      )
+      Row {
+        TextButton(onClick = { confirming = true }) { Text("Discard") }
+        TextButton(onClick = controller::continuePendingReview) { Text("Continue") }
+      }
+    }
+  }
+  if (confirming) {
+    AlertDialog(
+      onDismissRequest = { confirming = false },
+      title = { Text("Discard your pending review?") },
+      text = {
+        Text(
+          "It was started in another client. Its summary and " +
+            (if (n == 1) "comment" else "$n comments") +
+            " are deleted on the forge too.",
+        )
+      },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            confirming = false
+            controller.discardPendingReview()
+          },
+        ) {
+          Text("Discard")
+        }
+      },
+      dismissButton = { TextButton(onClick = { confirming = false }) { Text("Keep it") } },
+    )
+  }
+}
+
 @Composable
 private fun PaneHeading(text: String) {
   Text(text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
 }
 
 @Composable
-private fun ListCard(title: String, body: String, dim: Boolean = false, onClick: () -> Unit) {
+private fun ListCard(
+  title: String,
+  body: String,
+  dim: Boolean = false,
+  maxLines: Int = 3,
+  onClick: () -> Unit,
+) {
   val colors = MaterialTheme.colorScheme
   Surface(
     color = colors.surfaceContainer,
@@ -284,14 +396,16 @@ private fun ListCard(title: String, body: String, dim: Boolean = false, onClick:
           modifier = Modifier.padding(start = 6.dp),
         )
       }
-      Text(
-        markdownPreview(body),
-        style = MaterialTheme.typography.bodyMedium,
-        color = if (dim) colors.onSurfaceVariant else colors.onSurface,
-        maxLines = 3,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.padding(top = 4.dp),
-      )
+      if (maxLines > 0) {
+        Text(
+          markdownPreview(body),
+          style = MaterialTheme.typography.bodyMedium,
+          color = if (dim) colors.onSurfaceVariant else colors.onSurface,
+          maxLines = maxLines,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.padding(top = 4.dp),
+        )
+      }
     }
   }
 }

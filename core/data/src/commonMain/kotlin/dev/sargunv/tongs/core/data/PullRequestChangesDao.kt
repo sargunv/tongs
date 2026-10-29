@@ -3,6 +3,7 @@ package dev.sargunv.tongs.core.data
 import androidx.room3.Dao
 import androidx.room3.Entity
 import androidx.room3.ForeignKey
+import androidx.room3.Ignore
 import androidx.room3.Index
 import androidx.room3.PrimaryKey
 import androidx.room3.Query
@@ -40,7 +41,11 @@ data class PullRequestOverviewEntity(
   val webUrl: String,
   val viewerDidAuthor: Boolean,
   val viewerReviewRequested: Boolean,
-  val viewerHasPendingReview: Boolean,
+  val viewerHasPendingReview: Boolean = false,
+  /** The viewer's review left pending on the forge, as from the web, if there is one. */
+  @Ignore val pendingReviewId: String? = null,
+  @Ignore val pendingReviewBody: String? = null,
+  @Ignore val pendingReviewComments: Int = 0,
   val syncedAt: Long,
 )
 
@@ -75,8 +80,8 @@ data class ViewedFileEntity(
 )
 
 /**
- * A line comment in the pending review, drafted here until the review is submitted. The anchor is
- * the forge-neutral `ReviewAnchor`.
+ * A comment in the pending review, drafted here until the review is submitted: a line comment, with
+ * the forge-neutral `ReviewAnchor`, or a reply to thread [inReplyTo], whose anchor is the thread's.
  */
 @Entity(
   tableName = "changes_draft_comment",
@@ -106,6 +111,7 @@ data class DraftCommentEntity(
   val body: String,
   val createdAt: Long,
   val updatedAt: Long,
+  @Ignore val inReplyTo: String? = null,
 )
 
 /** The pending review's summary, kept as it's typed. */
@@ -163,6 +169,10 @@ data class ChangesThreadEntity(
   val isFileLevel: Boolean,
   /** The forge's order. */
   val position: Int,
+  @Ignore val viewerCanReply: Boolean = false,
+  @Ignore val viewerCanResolve: Boolean = false,
+  @Ignore val viewerCanUnresolve: Boolean = false,
+  @Ignore val resolvedBy: String? = null,
 )
 
 @Entity(
@@ -188,7 +198,18 @@ data class ChangesThreadCommentEntity(
   val body: String,
   val createdAt: Long,
   val position: Int,
+  @Ignore val state: CommentState = CommentState.Published,
 )
+
+/** Where a thread's comment stands. */
+enum class CommentState {
+  /** Everyone sees it. */
+  Published,
+  /** In the viewer's review left pending on the forge, so only they see it. */
+  Pending,
+  /** Posted from here and not yet confirmed: its id is a placeholder until the forge answers. */
+  Sending,
+}
 
 @Dao
 interface PullRequestChangesDao {
@@ -317,18 +338,10 @@ interface PullRequestChangesDao {
 
   @Query(
     """
-    DELETE FROM changes_draft_comment
-    WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
-      AND id IN (:ids)
+    DELETE FROM changes_draft_comment WHERE id = :id AND updatedAt = :updatedAt AND body = :body
     """,
   )
-  suspend fun deleteDrafts(
-    accountId: Long,
-    owner: String,
-    repo: String,
-    number: Int,
-    ids: List<Long>,
-  )
+  suspend fun deleteDraftIfUnchanged(id: Long, updatedAt: Long, body: String)
 
   @Query(
     """
@@ -342,6 +355,19 @@ interface PullRequestChangesDao {
     repo: String,
     number: Int,
   ): Flow<DraftReviewEntity?>
+
+  @Query(
+    """
+    SELECT * FROM changes_draft_review
+    WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
+    """,
+  )
+  suspend fun draftReview(
+    accountId: Long,
+    owner: String,
+    repo: String,
+    number: Int,
+  ): DraftReviewEntity?
 
   @Upsert suspend fun upsertDraftReview(review: DraftReviewEntity)
 
@@ -393,4 +419,74 @@ interface PullRequestChangesDao {
   @Upsert suspend fun upsertThreads(threads: List<ChangesThreadEntity>)
 
   @Upsert suspend fun upsertThreadComments(comments: List<ChangesThreadCommentEntity>)
+
+  @Query("SELECT * FROM changes_thread WHERE accountId = :accountId AND id = :id")
+  suspend fun thread(accountId: Long, id: String): ChangesThreadEntity?
+
+  @Query(
+    "UPDATE changes_thread SET isResolved = :resolved WHERE accountId = :accountId AND id = :id",
+  )
+  suspend fun setThreadResolved(accountId: Long, id: String, resolved: Boolean)
+
+  @Query(
+    """
+    SELECT COALESCE(MAX(position), -1) + 1 FROM changes_thread_comment
+    WHERE accountId = :accountId AND threadId = :threadId
+    """,
+  )
+  suspend fun nextCommentPosition(accountId: Long, threadId: String): Int
+
+  @Query(
+    """
+    SELECT c.* FROM changes_thread_comment c
+    JOIN changes_thread t ON t.accountId = c.accountId AND t.id = c.threadId
+    WHERE t.accountId = :accountId AND t.owner = :owner AND t.repo = :repo AND t.number = :number
+      AND c.id LIKE 'sending:%'
+    """,
+  )
+  suspend fun sendingComments(
+    accountId: Long,
+    owner: String,
+    repo: String,
+    number: Int,
+  ): List<ChangesThreadCommentEntity>
+
+  @Query("DELETE FROM changes_thread_comment WHERE accountId = :accountId AND id = :id")
+  suspend fun deleteThreadComment(accountId: Long, id: String)
+
+  @Query(
+    """
+    UPDATE changes_pr SET viewerHasPendingReview = 0
+    WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
+    """,
+  )
+  suspend fun clearPendingReview(accountId: Long, owner: String, repo: String, number: Int)
+
+  @Query(
+    """
+    DELETE FROM changes_thread_comment
+    WHERE accountId = :accountId AND id IN (:ids) AND threadId IN (
+      SELECT id FROM changes_thread
+      WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number)
+    """,
+  )
+  suspend fun deletePendingComments(
+    accountId: Long,
+    owner: String,
+    repo: String,
+    number: Int,
+    ids: List<String>,
+  )
+
+  /** Threads left with no comments, as one the forge's pending review started. */
+  @Query(
+    """
+    DELETE FROM changes_thread
+    WHERE accountId = :accountId AND owner = :owner AND repo = :repo AND number = :number
+      AND NOT EXISTS (
+        SELECT 1 FROM changes_thread_comment c
+        WHERE c.accountId = changes_thread.accountId AND c.threadId = changes_thread.id)
+    """,
+  )
+  suspend fun deleteEmptyThreads(accountId: Long, owner: String, repo: String, number: Int)
 }

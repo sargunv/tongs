@@ -3,6 +3,7 @@ package dev.sargunv.tongs.core.data
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import dev.sargunv.tongs.engine.Highlighter
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesTo
 import dev.zacsweers.metro.Provides
@@ -31,6 +32,9 @@ interface DataBindings {
   @Provides fun tokenStore(environment: AppEnvironment): TokenStore = environment.tokenStore
 
   @Provides fun clock(): Clock = Clock.System
+
+  /** One per process: its cache is keyed by blob, so it serves every PR. */
+  @Provides @SingleIn(AppScope::class) fun highlighter(): Highlighter = Highlighter()
 
   /** For work that outlives a screen, like a forge call behind an optimistic update. */
   @Provides

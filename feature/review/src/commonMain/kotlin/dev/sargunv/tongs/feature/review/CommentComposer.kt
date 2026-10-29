@@ -1,148 +1,163 @@
 package dev.sargunv.tongs.feature.review
 
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.text.input.TextFieldLineLimits
-import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isCtrlPressed
-import androidx.compose.ui.input.key.isMetaPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.sargunv.tongs.core.composer.Composer
+import dev.sargunv.tongs.core.composer.ComposerAction
+import dev.sargunv.tongs.core.composer.rememberComposerState
+import dev.sargunv.tongs.core.data.DraftKey
+import dev.sargunv.tongs.core.data.DraftRepository
+import dev.sargunv.tongs.core.markdown.MarkdownContext
+import dev.sargunv.tongs.core.ui.ConversationIcons
+import dev.sargunv.tongs.engine.RowKind
 
 /**
- * What a composer edits: one comment's text, with where it goes for context.
+ * What a composer edits: one comment, with where it goes for context.
  *
- * @property title what the comment is on, like `Lines 12–14 of src/Map.kt`.
- * @property initialBody the text to start from: an edited draft's, or empty.
+ * @property draftKey where the text autosaves while it's written; [initialBody] is the text to
+ *   start from when there's no draft there, as an edited pending comment's.
+ * @property title what the comment is on, like `Lines 12–14 of Map.kt`.
  * @property suggestion the selected lines as they are, for "Suggest change" to prefill as a
  *
  *   ```` ```suggestion ```` block; null where a suggestion can't apply, as on removed lines.
- * @property submitLabel the send action's label.
+ *
+ * @property context resolves references in the preview, and holds the lines a suggestion changes.
+ * @property quoted the lines, for a composer that covers the diff; empty where the diff stays in
+ *   sight.
+ * @property onSubmit gets the text once the composer has stopped autosaving it.
  */
 class CommentRequest(
-  val title: String,
+  val draftKey: DraftKey,
+  val drafts: DraftRepository,
   val initialBody: String,
+  val title: String,
+  val subtitle: String?,
+  val context: MarkdownContext,
   val suggestion: String?,
+  val quoted: List<QuotedLine>,
   val submitLabel: String,
   val onSubmit: (body: String) -> Unit,
-  val onCancel: () -> Unit,
+  val onClose: () -> Unit,
 )
 
 /**
- * Writes a comment. This is the seam the thread screen's email-style composer can take over: an
- * inline one reserves [inlineRows] rows of the diff under the lines and draws [Content] there; one
- * that returns 0 is shown in the screen's composer slot instead, a sheet when folded and the side
- * pane when wide. Provide another with [LocalCommentComposer].
+ * Writes a comment. The changes screen decides where it shows (a full-screen sheet when folded, a
+ * pane beside the diff otherwise) and this fills it. Provide another with [LocalCommentComposer].
  */
 interface CommentComposer {
-  /** Rows of the diff to reserve, or 0 to show in the screen's composer slot. */
-  val inlineRows: Int
-
   @Composable fun Content(request: CommentRequest, modifier: Modifier)
 }
 
-val LocalCommentComposer = staticCompositionLocalOf<CommentComposer> { InlineCommentComposer }
+val LocalCommentComposer = staticCompositionLocalOf<CommentComposer> { MarkdownCommentComposer }
 
 /** Wraps [lines] as a suggested change: GitHub, Forgejo, and GitLab all read this fence. */
 fun suggestionBlock(lines: String): String = "```suggestion\n$lines\n```\n"
 
 /**
- * A plain inline composer: a text field under the lines, with "Suggest change", Cancel, and the
- * send action. Ctrl or Cmd+Enter sends, Escape cancels.
+ * The app's Markdown [Composer], as the thread screen's: toolbar, preview, and autosaved drafts,
+ * with "Suggest change" beside the send action.
  */
-object InlineCommentComposer : CommentComposer {
-  override val inlineRows = 14
-
+object MarkdownCommentComposer : CommentComposer {
   @Composable
   override fun Content(request: CommentRequest, modifier: Modifier) {
-    val text = rememberTextFieldState(request.initialBody)
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focus.requestFocus() }
-    val send = { if (text.text.isNotBlank()) request.onSubmit(text.text.toString()) }
-    Surface(
-      color = MaterialTheme.colorScheme.surfaceContainerHigh,
-      shape = MaterialTheme.shapes.large,
-      tonalElevation = 2.dp,
-      modifier = modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp),
-    ) {
-      Column(
-        Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-      ) {
-        Text(
-          request.title,
-          style = MaterialTheme.typography.labelLarge,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-        OutlinedTextField(
-          state = text,
-          placeholder = { Text("Leave a comment") },
-          lineLimits = TextFieldLineLimits.MultiLine(),
-          textStyle = MaterialTheme.typography.bodyMedium,
-          modifier =
-            Modifier.weight(1f).fillMaxWidth().focusRequester(focus).onPreviewKeyEvent { event ->
-              if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-              when {
-                event.key == Key.Enter && (event.isCtrlPressed || event.isMetaPressed) -> {
-                  send()
-                  true
-                }
-                event.key == Key.Escape -> {
-                  request.onCancel()
-                  true
-                }
-                else -> false
-              }
+    val state = rememberComposerState(request.draftKey, request.drafts, request.initialBody)
+    val actions = buildList {
+      request.suggestion?.let { lines ->
+        add(
+          ComposerAction(
+            "Suggest change",
+            onClick = {
+              val text = state.text.text.toString()
+              val prefix = if (text.isBlank()) "" else "${text.trimEnd()}\n\n"
+              state.text.setTextAndPlaceCursorAtEnd(prefix + suggestionBlock(lines))
             },
+            icon = ConversationIcons.Code,
+            allowsEmpty = true,
+          ),
         )
-        // Wraps when narrow, as in a folded phone's diff, rather than clipping the send action.
-        FlowRow(
-          horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
-          itemVerticalAlignment = Alignment.CenterVertically,
-          modifier = Modifier.fillMaxWidth(),
-        ) {
-          if (request.suggestion != null) {
-            TextButton(
-              onClick = {
-                val prefix = text.text.toString().let { if (it.isBlank()) "" else "$it\n" }
-                text.setTextAndPlaceCursorAtEnd(prefix + suggestionBlock(request.suggestion))
-              },
-            ) {
-              Text("Suggest change", maxLines = 1)
-            }
-            Spacer(Modifier.weight(1f))
-          }
-          TextButton(onClick = request.onCancel) { Text("Cancel", maxLines = 1) }
-          Button(onClick = send, enabled = text.text.isNotBlank()) {
-            Text(request.submitLabel, maxLines = 1)
-          }
+      }
+      add(
+        ComposerAction(
+          request.submitLabel,
+          onClick = {
+            state.markSent()
+            request.onSubmit(it)
+          },
+          icon = ConversationIcons.Send,
+          primary = true,
+        ),
+      )
+    }
+    Composer(
+      state = state,
+      title = request.title,
+      subtitle = request.subtitle,
+      actions = actions,
+      onClose = request.onClose,
+      context = request.context,
+      modifier = modifier,
+      subject = request.quoted.takeIf { it.isNotEmpty() }?.let { { QuotedLines(it) } },
+    )
+  }
+}
+
+/** The lines a comment is on, as the diff shows them, for a composer that covers it. */
+@Composable
+private fun QuotedLines(lines: List<QuotedLine>) {
+  val colors = MaterialTheme.colorScheme
+  val dark = colors.surface.luminance() < 0.5f
+  val added = if (dark) Color(0x332EA043) else Color(0xFFE6FFEC)
+  val removed = if (dark) Color(0x33F85149) else Color(0xFFFFEBE9)
+  val digits = remember(lines) { lines.maxOf { it.line }.toString().length.coerceAtLeast(3) }
+  val style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+  Column(
+    Modifier.fillMaxWidth()
+      .horizontalScroll(rememberScrollState())
+      .width(IntrinsicSize.Max)
+      .widthIn(min = 360.dp)
+      .padding(vertical = 6.dp),
+  ) {
+    for (line in lines) {
+      val (mark, background) =
+        when (line.kind) {
+          RowKind.Added -> "+" to added
+          RowKind.Removed -> "−" to removed
+          else -> " " to Color.Transparent
         }
+      Row(Modifier.fillMaxWidth().background(background).padding(horizontal = 12.dp)) {
+        Text(
+          line.line.toString().padStart(digits),
+          style = style,
+          color = colors.onSurfaceVariant,
+          maxLines = 1,
+        )
+        Text(
+          mark,
+          style = style,
+          color = colors.onSurfaceVariant,
+          modifier = Modifier.padding(horizontal = 6.dp),
+        )
+        Text(line.text, style = style, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip)
       }
     }
   }

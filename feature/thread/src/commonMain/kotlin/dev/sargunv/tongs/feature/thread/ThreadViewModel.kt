@@ -118,7 +118,8 @@ class ThreadViewModel(
             combine(
               threads.observe(ref),
               status,
-              drafts.hasDraft(ref.accountId, ref.repo, ref.number),
+              // The reply's own draft: line comments drafted in the PR's changes don't count.
+              drafts.observe(ref.replyDraft).map { it != null },
             ) { snapshot, s, draft ->
               Triple(snapshot, s, draft)
             }

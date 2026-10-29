@@ -675,16 +675,25 @@ express that, so its adapter will have to narrow such a range.
       so the forge sees toggles in order; a refusal undoes it. Once the file
       list is complete, the forge's state for the current versions is merged in,
       leaving pending changes alone.
-    - Existing threads show inline, read-only: resolved ones fold to one line,
-      and a card opens the whole thread in the side pane or a sheet. Comment
-      bodies show as plain text until Markdown rendering lands.
+    - Review comments render with `ForgeMarkdown`; resolved threads fold to one
+      line and can be reopened. Reply and resolve/unresolve update Room
+      optimistically, with a snackbar and rollback on refusal. Replies go into a
+      pending review when one is under way, and post directly otherwise.
     - The pending review lives in Room (`changes_draft_comment`,
-      `changes_draft_review`) and goes out as one REST create-review call,
-      pinned to the commit the drafts were written against. On failure it all
-      stays.
-    - The composer is a seam (`CommentComposer`): the inline one reserves rows
-      under the lines; one that reserves none shows in the side pane or a sheet,
-      which suits the thread screen's email-style composer.
+      `changes_draft_review`). New line comments go out as one REST review
+      pinned to their commit; replies and reviews started in another client are
+      built up through GraphQL before submission. Accepted steps are removed
+      locally, so retrying continues the pending review after a partial failure.
+      A review left open elsewhere offers Continue and Discard.
+    - `CommentComposer` uses the shared `Composer`: full screen with the
+      selected lines when folded, in the tree's place beside the diff when
+      unfolded, and in the review pane on desktop. Its `DraftKey` slots autosave
+      text, including unsent comments and thread replies; it reserves no diff
+      rows. Suggest change prefills the selected new-side lines.
+    - Supplemental review metadata is JSON in an internal Room key/value slot,
+      excluded from draft badges. This keeps schema version 5 unchanged while
+      persisting permissions, pending review identity, pending comment state,
+      and reply targets.
 - **Commenting, modeled on email.**
   - The thread keeps the timeline. Its end has Reply and Quote actions rather
     than an always-open text box, and each comment has "Quote reply".
@@ -1530,9 +1539,9 @@ alternating `main` with the branch, two runs each:
 2. **Review.**
    - Full PR review: viewed state, comment drafts, submitting reviews, merging,
      CI. Built on 2026-10-28: the changes screen with its file tree, viewed
-     state, line comments drafted into a pending review, submitting it, and
-     read-only threads. Not yet: replying to and resolving threads, merging, CI,
-     and the revision picker.
+     state, Markdown line comments and thread replies, autosaved composers,
+     submitting and continuing pending reviews, and resolving threads. Not yet:
+     merging, CI, and the revision picker.
 3. **Repo browser and feed.**
 4. **Forgejo adapter.** Gitea-family core, PAT auth, capability-driven UI.
 5. **Polish and distribution.**

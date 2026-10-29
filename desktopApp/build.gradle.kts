@@ -9,6 +9,7 @@ plugins {
 kotlin { jvmToolchain(25) }
 
 dependencies {
+  testImplementation(kotlin("test"))
   implementation(project(":engine"))
   implementation(project(":codeview"))
   implementation(project(":feature:review"))

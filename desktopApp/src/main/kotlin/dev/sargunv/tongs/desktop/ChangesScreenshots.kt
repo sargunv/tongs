@@ -17,6 +17,7 @@ import dev.sargunv.tongs.app.TongsApp
 import dev.sargunv.tongs.app.changesBackStack
 import dev.sargunv.tongs.app.createAppGraph
 import dev.sargunv.tongs.codeview.codeRowHeight
+import dev.sargunv.tongs.core.navigation.Route
 import dev.sargunv.tongs.forge.api.ForgeKind
 import dev.sargunv.tongs.forge.api.Instance
 import java.io.File
@@ -30,9 +31,10 @@ import org.jetbrains.skia.EncodedImageFormat
 
 /**
  * Renders the PR changes screen offscreen into [dir], driving it like a reader would: it opens
- * [pr], jumps to a thread from the side pane, drags across two line numbers, writes a comment, adds
- * it to a pending review, and opens Finish review. With [review] as well, it shows a PR whose
- * review is requested.
+ * [pr], jumps to a thread from the side pane, drags across two line numbers, writes a suggestion,
+ * and adds it to a pending review, on desktop and at a folded and an unfolded phone's widths. Then
+ * it opens [threads], a PR with review threads, and writes a reply to one, and [resolved], to show
+ * a resolved thread folded inline. With [review] as well, it shows a PR whose review is requested.
  *
  * Signs in with the GitHub CLI's token if there's no account. With [apiUrl], the account's API goes
  * there instead of api.github.com: point it at a proxy that fakes mutations, and [mutate] also
@@ -44,9 +46,11 @@ fun renderChangesScreenshots(
   review: String?,
   apiUrl: String?,
   mutate: Boolean,
-  width: Int = 1600,
-  height: Int = 1000,
-  scale: Float = 1.25f,
+  threads: String = "maplibre/maplibre-compose#1867",
+  resolved: String = "maplibre/maplibre-native#4231",
+  desktopWidth: Int = 1600,
+  desktopHeight: Int = 1000,
+  desktopScale: Float = 1.25f,
 ) {
   require(!mutate || apiUrl != null) { "--mutate needs --api-url, so nothing reaches GitHub" }
   dir.mkdirs()
@@ -61,8 +65,19 @@ fun renderChangesScreenshots(
       graph.accounts.signIn(instance, token)
     }
   }
-  fun open(link: String, block: Driver.() -> Unit) {
+  fun open(
+    link: String,
+    width: Int = desktopWidth,
+    height: Int = desktopHeight,
+    scale: Float = desktopScale,
+    block: Driver.() -> Unit,
+  ) {
     val stack = runBlocking { checkNotNull(graph.changesBackStack(link)) { "Not a PR: $link" } }
+    val route = stack.filterIsInstance<Route.PullRequestChanges>().single()
+    val effective = runBlocking {
+      checkNotNull(graph.accounts.account(route.accountId)).instance.apiUrl
+    }
+    requireScreenshotMutationEndpoint(mutate, apiUrl, effective)
     val density = Density(scale)
     val driver =
       Driver(
@@ -77,6 +92,32 @@ fun renderChangesScreenshots(
     }
   }
 
+  /** Drags across two line numbers in [file], picked from the tree, and writes a suggestion. */
+  fun Driver.comment(file: Regex, tree: Boolean = true) {
+    if (tree) {
+      val filter =
+        checkNotNull(node { it.config.getOrNull(SemanticsProperties.EditableText) != null })
+      setText(filter, "url_rules")
+      pump(0.5.seconds)
+      click(checkNotNull(text(file)).center)
+      setText(filter, "")
+    } else jumpFromSheet(file)
+    pump(1.seconds)
+    val diff = checkNotNull(tag("diff")) { "no diff" }
+    val row = density.codeRowHeight()
+    val gutter = diff.left + row
+    drag(Offset(gutter, diff.top + row * 4.5f), Offset(gutter, diff.top + row * 6.5f))
+    waitFor(10.seconds, "the composer") { text(Regex("Lines? .* of .*")) != null }
+    editable()?.let { setText(it, "") }
+    text(Regex("Suggest change"))?.let { click(it.center) }
+    pump(1.seconds)
+    editable()?.let { field ->
+      val suggestion = field.config.getOrNull(SemanticsProperties.EditableText)?.text.orEmpty()
+      setText(field, "This reads clearer as one call.\n\n$suggestion")
+    }
+    pump(1.seconds)
+  }
+
   open(pr) {
     waitFor(90.seconds, "the review to load") { text(Regex("""\d+ of \d+ files viewed""")) != null }
     pump(2.seconds)
@@ -86,23 +127,10 @@ fun renderChangesScreenshots(
     pump(2.seconds)
     shot("desktop-thread")
     // Then a file with no threads, from the tree: its header, its first hunk, then code.
-    text(Regex("url_rules.cpp"))?.let { click(it.center) }
-    pump(1.seconds)
-    val diff = checkNotNull(tag("diff")) { "no diff" }
-    val row = density.codeRowHeight()
-    val gutter = diff.left + row
-    drag(Offset(gutter, diff.top + row * 4.5f), Offset(gutter, diff.top + row * 6.5f))
-    waitFor(10.seconds, "the composer") { text(Regex("Lines? .* of .*")) != null }
-    text(Regex("Suggest change"))?.let { click(it.center) }
-    pump(1.seconds)
-    editable(within = diff)?.let { field ->
-      val suggestion = field.config.getOrNull(SemanticsProperties.EditableText)?.text.orEmpty()
-      setText(field, "This reads clearer as one call.\n$suggestion")
-    }
-    pump(1.seconds)
+    comment(Regex("url_rules.cpp"))
     shot("desktop-comment")
     text(Regex("Start review|Add to review"))?.let { click(it.center) }
-    waitFor(10.seconds, "the pending review") { text(Regex("1 pending comment")) != null }
+    waitFor(10.seconds, "the pending review") { text(Regex("1 pending comment.*")) != null }
     pump(1.seconds)
     shot("desktop-pending")
     if (mutate) {
@@ -114,6 +142,65 @@ fun renderChangesScreenshots(
       pump(1.seconds)
       shot("desktop-submitted")
     }
+  }
+
+  // A folded phone's width, about 360 dp, and an unfolded one's, about 700 dp.
+  open(pr, width = 900, height = 1900, scale = 2.5f) {
+    waitFor(90.seconds, "the review to load") { text(Regex(".* files · .*")) != null }
+    pump(2.seconds)
+    comment(Regex(".*url_rules.cpp.*"), tree = false)
+    shot("folded-comment")
+  }
+  open(pr, width = 1750, height = 1950, scale = 2.5f) {
+    waitFor(90.seconds, "the review to load") { text(Regex("""\d+ of \d+ files viewed""")) != null }
+    pump(2.seconds)
+    comment(Regex("url_rules.cpp"))
+    shot("unfolded-comment")
+  }
+
+  open(threads) {
+    waitFor(90.seconds, "the review to load") { text(Regex("""\d+ of \d+ files viewed""")) != null }
+    waitFor(30.seconds, "its threads") { text(Regex("""\d+ threads?""")) != null }
+    pump(3.seconds)
+    // Open a discussion so its Markdown and actions are visible, even when offscreen in the diff.
+    (text(Regex("grpetitle-apps on .*")) ?: text(Regex(".* on .*")))?.let { click(it.center) }
+    pump(2.seconds)
+    shot("desktop-markdown")
+    node { it.config.getOrNull(SemanticsProperties.Text).orEmpty().any { t -> t.text == "Reply" } }
+      ?.let { click(it.boundsInRoot.center) }
+    waitFor(10.seconds, "the reply composer") { text(Regex("Reply on .*")) != null }
+    editable()?.let {
+      setText(it, "Good catch: I'll make it conditional, with an example for each.")
+    }
+    pump(1.seconds)
+    shot("desktop-reply")
+    if (mutate) {
+      // Posts at once, with no review pending; the fake server answers.
+      node { n ->
+        n.config.getOrNull(SemanticsProperties.Text).orEmpty().any { it.text == "Reply" } &&
+          n.boundsInRoot.left > desktopWidth * 0.7f &&
+          n.boundsInRoot.top > desktopHeight * 0.7f
+      }
+        ?.let { click(it.boundsInRoot.center) }
+      waitFor(10.seconds, "the reply to send") { text(Regex("Reply on .*")) == null }
+      pump(3.seconds)
+      shot("desktop-replied")
+      text(Regex("Resolve"))?.let { click(it.center) }
+      pump(2.seconds)
+      shot("desktop-resolved")
+      shot("desktop-resolved-collapsed")
+    }
+  }
+
+  open(resolved) {
+    waitFor(120.seconds, "the review to load") {
+      text(Regex("""\d+ of \d+ files viewed""")) != null
+    }
+    waitFor(30.seconds, "its threads") { text(Regex("""\d+ threads?""")) != null }
+    pump(2.seconds)
+    text(Regex(""".* on .* · resolved.*"""))?.let { click(it.center) }
+    pump(3.seconds)
+    shot("desktop-resolved-reference")
   }
 
   if (review != null) {
@@ -189,10 +276,26 @@ private class Driver(val scene: ImageComposeScene, val density: Density, val dir
   }
     ?.boundsInRoot
 
-  /** A text field inside [within], like the composer in the diff. */
-  fun editable(within: Rect): SemanticsNode? = node {
-    it.config.getOrNull(SemanticsProperties.EditableText) != null &&
-      within.contains(it.boundsInRoot.center)
+  /** The composer's text field. */
+  fun editable(): SemanticsNode? = node {
+    it.config.getOrNull(SemanticsProperties.TestTag) == "composer-body"
+  }
+
+  /** Picks [file] from the tree's sheet, as when folded. */
+  fun jumpFromSheet(file: Regex) {
+    node { it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty().contains("Files") }
+      ?.let { click(it.boundsInRoot.center) }
+    pump(1.seconds)
+    text(Regex("Filter.*"))
+    node { it.config.getOrNull(SemanticsProperties.EditableText) != null }
+      ?.let { setText(it, "url_rules") }
+    pump(1.seconds)
+    node { n ->
+      n.config.getOrNull(SemanticsProperties.Text).orEmpty().any { file.matches(it.text) } &&
+        n.config.getOrNull(SemanticsProperties.EditableText) == null
+    }
+      ?.let { click(it.boundsInRoot.center) }
+    pump(1.seconds)
   }
 
   fun setText(node: SemanticsNode, text: String) = onUi {
@@ -236,3 +339,19 @@ private class Driver(val scene: ImageComposeScene, val density: Density, val dir
 
 private val SemanticsNode.center: Offset
   get() = boundsInRoot.center
+
+/** Validate the account actually picked by the navigation helper before it can send anything. */
+internal fun requireScreenshotMutationEndpoint(
+  mutate: Boolean,
+  requested: String?,
+  effective: String,
+) {
+  if (!mutate) return
+  val endpoint = java.net.URI(effective)
+  require(
+    requested?.trimEnd('/') == effective.trimEnd('/') &&
+      endpoint.host in setOf("127.0.0.1", "localhost", "[::1]", "::1"),
+  ) {
+    "Screenshot mutations require the selected account to use the requested loopback fake server"
+  }
+}

@@ -67,9 +67,15 @@ data class PullRequestOverview(
   val viewerDidAuthor: Boolean,
   /** The viewer's review is requested, directly or through a team. */
   val viewerReviewRequested: Boolean,
-  /** The viewer has a review pending on the forge itself, from another client. */
-  val viewerHasPendingReview: Boolean,
+  /** The viewer's review left pending on the forge itself, as by another client. */
+  val pendingReview: PendingReview? = null,
 )
+
+/**
+ * A review the viewer started on the forge and hasn't submitted, as from the web. A forge allows
+ * one per PR, so a new review has to continue it or discard it first.
+ */
+data class PendingReview(val id: String, val body: String, val commentCount: Int)
 
 /** An existing comment thread on a PR's diff. */
 data class DiffReviewThread(
@@ -86,6 +92,10 @@ data class DiffReviewThread(
   /** On the file as a whole, not a line. */
   val isFileLevel: Boolean,
   val comments: List<ReviewComment>,
+  val viewerCanReply: Boolean = false,
+  val viewerCanResolve: Boolean = false,
+  val viewerCanUnresolve: Boolean = false,
+  val resolvedBy: String? = null,
 )
 
 data class ReviewComment(
@@ -94,6 +104,8 @@ data class ReviewComment(
   val authorAvatarUrl: String?,
   val body: String,
   val createdAt: Instant,
+  /** Part of the viewer's [PendingReview], so only they see it. */
+  val pending: Boolean = false,
 )
 
 /**
@@ -113,4 +125,30 @@ interface PullRequestReviews {
 
   /** Submits a whole review at once: summary, verdict, and line comments. */
   suspend fun submitReview(repo: RepoRef, number: Int, submission: ReviewSubmission)
+
+  /**
+   * Replies to thread [threadId]: into the pending review [pendingReviewId] if given, otherwise
+   * posted at once. Returns the comment as the forge has it.
+   */
+  suspend fun reply(threadId: String, body: String, pendingReviewId: String? = null): ReviewComment
+
+  suspend fun setResolved(threadId: String, resolved: Boolean)
+
+  /**
+   * Starts a pending review on PR [pullRequestId] at [commitOid] with [comments], for replies to
+   * join before it's submitted. Returns its id.
+   */
+  suspend fun startPendingReview(
+    pullRequestId: String,
+    commitOid: String,
+    comments: List<DraftReviewComment>,
+  ): String
+
+  /** Adds a new line comment to pending review [reviewId]. */
+  suspend fun addToPendingReview(reviewId: String, comment: DraftReviewComment)
+
+  suspend fun submitPendingReview(reviewId: String, event: ReviewEvent, body: String)
+
+  /** Discards pending review [reviewId] and every comment in it. */
+  suspend fun deletePendingReview(reviewId: String)
 }

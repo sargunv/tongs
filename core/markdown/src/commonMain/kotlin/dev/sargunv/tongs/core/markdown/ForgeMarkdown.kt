@@ -42,7 +42,8 @@ private const val SYNC_PARSE_CHARS = 4_000
 /**
  * Renders a comment, description, or draft the way the forge would: GitHub-flavored Markdown with
  * references linked ([prepareForgeMarkdown]), single newlines as line breaks like GitHub comments,
- * images through Coil, and code fences highlighted by the engine. Link clicks go through
+ * images through Coil, and code fences highlighted by the engine. A ```` ```suggestion ```` block
+ * shows as a diff against [MarkdownContext.suggestionBase]. Link clicks go through
  * `LocalUriHandler`; wrap a screen in [ProvideForgeLinks] to open threads in the app.
  *
  * Short bodies render on first composition. Long ones are prepared and parsed off the main thread
@@ -139,14 +140,18 @@ fun ForgeMarkdown(
     annotator =
       remember { markdownAnnotator(config = markdownAnnotatorConfig(eolAsNewLine = true)) },
     components =
-      remember {
+      remember(context.suggestionBase) {
         markdownComponents(
           codeFence = { model ->
             MarkdownCodeFence(
               model.content,
               model.node,
               block = { source, language, style ->
-                HighlightedCode(source, language, style)
+                if (language == SUGGESTION) {
+                  SuggestedChange(source, context.suggestionBase, style)
+                } else {
+                  HighlightedCode(source, language, style)
+                }
               },
             )
           },

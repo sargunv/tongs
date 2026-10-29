@@ -1,11 +1,13 @@
 package dev.sargunv.tongs.feature.feed
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
@@ -188,7 +190,14 @@ internal fun EmptyFeed(
         TongsIcons.Activity,
         "Everything here is muted",
         body = "The $muted latest events are all from repos or people you muted.",
-        action = { OutlinedButton(onClick = onShowMuted) { Text("Show muted") } },
+        action = {
+          Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (state.data?.canLoadMore == true) {
+              Button(onClick = actions::loadMore) { Text("Show older activity") }
+            }
+            OutlinedButton(onClick = onShowMuted) { Text("Show muted") }
+          }
+        },
       )
     else -> {
       val synced = state.sync.mapNotNull { it.lastSyncedAt }.maxOrNull()

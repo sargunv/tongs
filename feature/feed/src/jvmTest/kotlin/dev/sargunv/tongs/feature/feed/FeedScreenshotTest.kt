@@ -9,7 +9,10 @@ import androidx.compose.material3.adaptive.layout.calculatePaneScaffoldDirective
 import androidx.compose.material3.adaptive.layout.rememberPaneExpansionState
 import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.isRoot
@@ -199,6 +202,29 @@ class FeedScreenshotTest {
   @Test fun empty() = capture("feed-empty", state.copy(data = FeedData(emptyList(), 0, 0, 0)))
 
   @Test fun muted() = capture("feed-muted", state.copy(data = FeedData(emptyList(), 11, 11, 11)))
+
+  @Test
+  fun olderActivityIsReachableWhenTheLoadedPageIsAllMuted() =
+    runDesktopComposeUiTest(width = 360, height = 720) {
+      var data by mutableStateOf(FeedData(emptyList(), 1501, 1500, 1500))
+      var loads = 0
+      val older = items.filterIsInstance<FeedItem.Subject>().first()
+      val actions =
+        object : FeedActions {
+          override fun loadMore() {
+            loads++
+            data = FeedData(listOf(older), 1501, 1501, 1500)
+          }
+        }
+      setContent { TongsTheme { FeedContent(state.copy(data = data), now, { false }, actions) } }
+      onNodeWithText("Everything here is muted").assertExists()
+      onNodeWithText("Show muted").assertExists()
+      onAllNodes(isRoot()).onLast().captureRoboImage("src/jvmTest/snapshots/feed-muted-older.png")
+      onNodeWithText("Show older activity").performClick()
+      assertEquals(1, loads)
+      onNodeWithText("Stream packs into the object store as they arrive").assertExists()
+      onNodeWithText("Show older activity").assertDoesNotExist()
+    }
 
   @Test
   fun offline() =

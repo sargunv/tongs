@@ -1,9 +1,10 @@
-import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import dev.nucleusframework.desktop.application.dsl.TargetFormat
 
 plugins {
   alias(libs.plugins.kotlin.jvm)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.compose.multiplatform)
+  alias(libs.plugins.nucleus)
 }
 
 kotlin { jvmToolchain(25) }
@@ -14,17 +15,19 @@ dependencies {
   implementation(project(":feature:review"))
   implementation(project(":app"))
   implementation(compose.desktop.currentOs)
+  implementation(libs.compose.material3)
   implementation(libs.kotlinx.coroutines.swing)
+  implementation(libs.nucleus.application)
+  implementation(libs.nucleus.decoratedWindowTao)
 }
 
-compose.desktop {
-  application {
-    mainClass = "dev.sargunv.tongs.desktop.MainKt"
-    jvmArgs += "-Djava.library.path=${rootDir.resolve("target/release")}"
-    nativeDistributions {
-      targetFormats(TargetFormat.Deb, TargetFormat.Dmg, TargetFormat.Msi)
-      packageName = "tongs"
-    }
+nucleus.application {
+  mainClass = "dev.sargunv.tongs.desktop.MainKt"
+  jvmArgs += "-Djava.library.path=${rootDir.resolve("target/release")}"
+  if (System.getProperty("os.name").startsWith("Mac")) jvmArgs += "-XstartOnFirstThread"
+  nativeDistributions {
+    targetFormats(TargetFormat.Deb, TargetFormat.Dmg, TargetFormat.Msi)
+    packageName = "tongs"
   }
 }
 

@@ -8,7 +8,7 @@ import androidx.compose.ui.platform.LocalContext
 
 /** Dynamic color, from the wallpaper. Every supported version (API 31+) has it. */
 @Composable
-internal actual fun platformColorScheme(darkTheme: Boolean): ColorScheme? {
+internal actual fun platformColorScheme(darkTheme: Boolean): ColorScheme {
   val context = LocalContext.current
   return if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
 }

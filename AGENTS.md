@@ -89,8 +89,8 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   the navigation shell and list-detail scenes
 - `build-logic`: convention plugins: `tongs.kmp.library` (JVM and Android
   targets, namespace from the module path) and `tongs.compose`
-- `desktopApp`: desktop shell; runs the app, and keeps the spike modes behind
-  flags
+- `desktopApp`: Nucleus/Tao desktop shell (native Wayland); runs the app, and
+  keeps AWT spike modes and offscreen screenshot modes behind flags
 - `androidApp`: Android shell; `MainActivity` runs the app
   (`--es thread owner/repo#N` opens a thread, `--es open owner/repo#N` a PR's
   changes), and `PullRequestActivity` keeps the account-free PR spike
@@ -114,9 +114,9 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
 - `prepare_languages` example: time extracting, loading, and compiling queries
   for every language on a device; its doc comment has the cargo-ndk and adb
   steps
-- `./gradlew :desktopApp:run`: run the app (builds the JNI library first). Its
-  data goes in `$XDG_DATA_HOME/tongs`; set `XDG_DATA_HOME` to sign in as someone
-  else. Sign-in offers `gh`'s token on desktop
+- `./gradlew :desktopApp:run`: run the Nucleus window (builds the JNI library
+  first). Its data goes in `$XDG_DATA_HOME/tongs`; set `XDG_DATA_HOME` to sign
+  in as someone else. Sign-in offers `gh`'s token on desktop
 - `./gradlew :desktopApp:run --args="--app-screenshots=<dir>"`: render the
   inbox, an open thread, settings, and a PR's changes offscreen with the
   signed-in account's real data (signs in with `gh`'s token if there's no

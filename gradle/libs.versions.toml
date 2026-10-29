@@ -21,9 +21,11 @@ ksp = "2.3.12"
 ktor = "3.6.0"
 lifecycle = "2.11.0"
 markdown-renderer = "0.46.0"
-material-kolor = "5.0.1"
+material-kolor = "6.0.0-beta01"
 metro = "1.5.0"
 navigation3 = "1.2.0"
+# A Nucleus 3.0 dev build, the one maplibre-compose's Nucleus demo runs, until 3.0 is released.
+nucleus = "3.0.0-dev-202610110853"
 okio = "3.18.2"
 roborazzi = "1.77.0"
 room3 = "3.0.3"
@@ -61,8 +63,11 @@ lifecycle-viewmodel-navigation3 = { module = "org.jetbrains.androidx.lifecycle:l
 markdown-renderer = { module = "com.mikepenz:multiplatform-markdown-renderer", version.ref = "markdown-renderer" }
 markdown-renderer-coil3 = { module = "com.mikepenz:multiplatform-markdown-renderer-coil3", version.ref = "markdown-renderer" }
 markdown-renderer-m3 = { module = "com.mikepenz:multiplatform-markdown-renderer-m3", version.ref = "markdown-renderer" }
-material-kolor = { module = "com.materialkolor:material-kolor", version.ref = "material-kolor" }
+material-kolor = { module = "com.materialkolor:material-kolor-material3", version.ref = "material-kolor" }
 navigation3-ui = { module = "org.jetbrains.androidx.navigation3:navigation3-ui", version.ref = "navigation3" }
+nucleus-systemColor = { module = "dev.nucleusframework:nucleus.system-color", version.ref = "nucleus" }
+nucleus-application = { module = "dev.nucleusframework:nucleus.nucleus-application", version.ref = "nucleus" }
+nucleus-decoratedWindowTao = { module = "dev.nucleusframework:nucleus.decorated-window-tao", version.ref = "nucleus" }
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
 roborazzi-compose-desktop = { module = "io.github.takahirom.roborazzi:roborazzi-compose-desktop", version.ref = "roborazzi" }
 room3-compiler = { module = "androidx.room3:room3-compiler", version.ref = "room3" }
@@ -87,6 +92,7 @@ kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref 
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 metro = { id = "dev.zacsweers.metro", version.ref = "metro" }
+nucleus = { id = "dev.nucleusframework", version.ref = "nucleus" }
 roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
 room3 = { id = "androidx.room3", version.ref = "room3" }
 

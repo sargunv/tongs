@@ -52,6 +52,43 @@ class InboxRepositoryTest {
   }
 
   @Test
+  fun doneGoesOutAfterAReadStillInFlight() = dbTest { db ->
+    val dao = db.inbox()
+    val (account, repository) = setUp(db)
+    repository.undoWindow = 5.seconds
+    // Opened, so marked read, then done while the read is still on its way.
+    repository.markRead(ThreadKey(account, "1"))
+    runCurrent()
+    repository.markDone(ThreadKey(account, "1"))
+    advanceTimeBy(6.seconds)
+    runCurrent()
+    assertEquals(listOf("read 1"), inbox.calls)
+
+    inbox.gate!!.complete(Unit)
+    runCurrent()
+    assertEquals(listOf("read 1", "done 1"), inbox.calls)
+    assertNull(dao.thread(account, "1"))
+  }
+
+  @Test
+  fun drainingAReadKeepsDoneInsideItsUndoWindow() = dbTest { db ->
+    val (account, repository) = setUp(db)
+    val key = ThreadKey(account, "1")
+    repository.markRead(key)
+    runCurrent()
+    repository.markRead(key)
+    runCurrent()
+    repository.undoWindow = Duration.INFINITE
+    val undo = repository.markDone(key)
+    inbox.gate!!.complete(Unit)
+    runCurrent()
+    assertEquals(listOf("read 1"), inbox.calls)
+    assertEquals(true, db.inbox().thread(account, "1")!!.pendingDone)
+    undo.undo()
+    assertEquals(false, db.inbox().thread(account, "1")!!.pendingDone)
+  }
+
+  @Test
   fun doneComesBackIfTheForgeRefuses() = dbTest { db ->
     val dao = db.inbox()
     val (account, repository) = setUp(db)
@@ -176,5 +213,33 @@ class InboxUndoTest {
     runCurrent()
     assertEquals(listOf("done 1"), inbox.calls)
     assertNull(dao.thread(account, "1"))
+  }
+
+  @Test
+  fun replaysPersistedReadsAndRevertsRefusedOnes() = dbTest { db ->
+    val dao = db.inbox()
+    val (account, clients) = signIn(db, inbox)
+    inbox.polls += InboxPoll.Changed(listOf(thread("1", START)), true, "c", null)
+    InboxSync(db, clients, virtualClock()).poll(account)
+    // The process died after the optimistic write, before the request was confirmed.
+    dao.markReadPending(account, "1")
+    inbox.gate = CompletableDeferred()
+    InboxRepository(db, clients, backgroundScope, virtualClock())
+    runCurrent()
+    assertEquals(listOf("read 1"), inbox.calls)
+    inbox.gate!!.complete(Unit)
+    runCurrent()
+    assertEquals(false, dao.thread(account, "1")!!.pendingRead)
+    assertEquals(false, dao.thread(account, "1")!!.unread)
+
+    dao.markReadPending(account, "1")
+    inbox.gate = CompletableDeferred()
+    InboxRepository(db, clients, backgroundScope, virtualClock())
+    runCurrent()
+    inbox.gate!!.completeExceptionally(IllegalStateException("offline"))
+    runCurrent()
+    assertEquals(listOf("read 1", "read 1"), inbox.calls)
+    assertEquals(false, dao.thread(account, "1")!!.pendingRead)
+    assertEquals(true, dao.thread(account, "1")!!.unread)
   }
 }

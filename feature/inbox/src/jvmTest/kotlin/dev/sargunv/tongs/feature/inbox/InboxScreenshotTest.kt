@@ -1,10 +1,15 @@
 package dev.sargunv.tongs.feature.inbox
 
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.runDesktopComposeUiTest
 import dev.sargunv.tongs.core.data.AccountSyncStatus
 import dev.sargunv.tongs.core.data.InboxQuery
@@ -16,11 +21,17 @@ import dev.sargunv.tongs.core.data.SyncProblem
 import dev.sargunv.tongs.core.ui.TongsTheme
 import io.github.takahirom.roborazzi.captureRoboImage
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atTime
+import kotlinx.datetime.toInstant
 
 /** Desktop screenshots of the inbox, from made-up data. */
 @OptIn(ExperimentalTestApi::class)
@@ -157,7 +168,7 @@ class InboxScreenshotTest {
         TongsTheme(darkTheme = dark) {
           InboxContent(
             state,
-            now,
+            { now },
             { it.id == "409" },
             object : InboxActions {},
             filterOpen = filterOpen,
@@ -193,6 +204,45 @@ class InboxScreenshotTest {
     )
 
   @Test fun inbox() = capture("inbox", state)
+
+  private fun snoozeAfterIdle(width: Int) =
+    runDesktopComposeUiTest(width = width, height = 640) {
+      var current = LocalDate(2026, 10, 28).atTime(8, 0).toInstant(TimeZone.currentSystemDefault())
+      var picked: Instant? = null
+      setContent {
+        TongsTheme {
+          InboxContent(
+            state.copy(rows = rows.take(1)),
+            { current },
+            { false },
+            object : InboxActions {
+              override fun snooze(row: InboxRow, until: Instant) {
+                picked = until
+              }
+            },
+          )
+        }
+      }
+      waitForIdle()
+      // The clock advances without a database emission or a parent recomposition.
+      current += 4.hours
+      onRoot().performKeyInput {
+        pressKey(Key.J)
+        pressKey(Key.S)
+      }
+      onAllNodes(isRoot())
+        .onLast()
+        .captureRoboImage("src/jvmTest/snapshots/inbox-snooze-idle-$width.png")
+      onNodeWithText("Later today").performClick()
+      assertEquals(snoozeOptions(current).first { it.label == "Later today" }.until, picked)
+      assertTrue(picked!! > current)
+    }
+
+  @Test fun snoozeAfterIdleFolded() = snoozeAfterIdle(360)
+
+  @Test fun snoozeAfterIdleUnfolded() = snoozeAfterIdle(700)
+
+  @Test fun snoozeAfterIdleDesktop() = snoozeAfterIdle(1000)
 
   /** Read or done elsewhere: GitHub stopped listing them as unread, and Tongs didn't read them. */
   private val readElsewhere = rows.mapIndexed { i, row ->

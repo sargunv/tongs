@@ -201,6 +201,8 @@ class GitHubFeedHydrator(
         requests
     } catch (e: ForgeException.NoAccess) {
       return PushCommits(push, null, null) to requests
+    } catch (e: ForgeException.SsoRequired) {
+      return PushCommits(push, null, null) to requests
     } catch (e: HttpException) {
       // Gone or unreachable from the base; transient failures are retried after sync's backoff.
       if (e.status.value !in setOf(404, 409, 422)) throw e

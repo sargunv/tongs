@@ -231,7 +231,7 @@ fun aggregateFeed(
           "refs:$repo:${event.actorLogin.lowercase()}:${kind.name}:${event.refType}"
         kind == FeedEventKind.Star -> "star:$repo"
         kind == FeedEventKind.Fork -> "fork:$repo"
-        else -> "single:${event.id}"
+        else -> "single:${webUrls[event.accountId] ?: "github"}:${event.id}"
       }
     val gap = if (kind == FeedEventKind.Star || kind == FeedEventKind.Fork) starGap else burstGap
     val burst = open[key]

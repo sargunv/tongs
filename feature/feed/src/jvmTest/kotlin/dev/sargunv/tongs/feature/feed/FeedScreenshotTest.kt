@@ -15,12 +15,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.runDesktopComposeUiTest
 import androidx.compose.ui.unit.dp
@@ -32,6 +35,7 @@ import dev.sargunv.tongs.core.data.FeedData
 import dev.sargunv.tongs.core.data.FeedEventEntity
 import dev.sargunv.tongs.core.data.FeedGrouping
 import dev.sargunv.tongs.core.data.FeedItem
+import dev.sargunv.tongs.core.data.FeedMuteEntity
 import dev.sargunv.tongs.core.data.MuteKind
 import dev.sargunv.tongs.core.data.SyncProblem
 import dev.sargunv.tongs.core.data.aggregateFeed
@@ -224,6 +228,36 @@ class FeedScreenshotTest {
       assertEquals(1, loads)
       onNodeWithText("Stream packs into the object store as they arrive").assertExists()
       onNodeWithText("Show older activity").assertDoesNotExist()
+    }
+
+  @Test fun allMutedItemsAreReachableOnPhone() = checkMutedDialog(width = 360)
+
+  @Test fun allMutedItemsAreReachableUnfolded() = checkMutedDialog(width = 700)
+
+  @Test fun allMutedItemsAreReachableInShortDesktopWindow() = checkMutedDialog(width = 1200)
+
+  private fun checkMutedDialog(width: Int) =
+    runDesktopComposeUiTest(width = width, height = 480) {
+      val mutes = (1..30).map { FeedMuteEntity(1, MuteKind.Repo.name, "octo/repo-$it", 0) }
+      var unmuted: FeedMuteEntity? = null
+      val actions =
+        object : FeedActions {
+          override fun unmute(mute: FeedMuteEntity) {
+            unmuted = mute
+          }
+        }
+      setContent {
+        TongsTheme { FeedContent(state.copy(mutes = mutes), now, { false }, actions) }
+      }
+      onNodeWithContentDescription("More").performClick()
+      onNodeWithText("Muted (30)").performClick()
+      onNodeWithText(mutes.last().value).performScrollTo().assertIsDisplayed()
+      onAllNodesWithText("Unmute").onLast().performClick()
+      assertEquals(mutes.last(), unmuted)
+      onNodeWithText("Done").assertIsDisplayed()
+      onAllNodes(isRoot())
+        .onLast()
+        .captureRoboImage("src/jvmTest/snapshots/feed-muted-dialog-$width.png")
     }
 
   @Test

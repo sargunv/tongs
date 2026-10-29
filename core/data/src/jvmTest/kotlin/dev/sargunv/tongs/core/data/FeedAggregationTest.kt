@@ -322,6 +322,29 @@ class FeedAggregationTest {
   }
 
   @Test
+  fun singleEventsWithTheSameIdOnDifferentInstancesStaySeparate() {
+    val first = event(FeedEventKind.Release, 1.minutes, accountId = 1, id = "42")
+    val second =
+      first.copy(
+        accountId = 2,
+        repoName = "other",
+        createdAt = (START - 2.minutes).toEpochMilliseconds(),
+        webUrl = "https://git.example.com/octo/other/releases/tag/v1",
+      )
+    val items =
+      aggregateFeed(
+        listOf(first, second),
+        emptyMap(),
+        webUrls = mapOf(1L to "https://github.com", 2L to "https://git.example.com"),
+      )
+
+    assertEquals(listOf(first, second), items.map { assertIs<FeedItem.Single>(it).event })
+    assertEquals(listOf(listOf(first), listOf(second)), items.map { it.events })
+    assertEquals(listOf(first.webUrl, second.webUrl), items.map { it.webUrl })
+    assertEquals(2, items.map { it.key }.distinct().size)
+  }
+
+  @Test
   fun groupsByRepoOrPersonInOrderOfTheirNewestItem() {
     val events =
       listOf(

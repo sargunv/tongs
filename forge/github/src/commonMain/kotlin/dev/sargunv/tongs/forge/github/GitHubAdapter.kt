@@ -5,6 +5,8 @@ import dev.sargunv.tongs.engine.FetchSession
 import dev.sargunv.tongs.engine.ReviewLoader
 import dev.sargunv.tongs.forge.api.Account
 import dev.sargunv.tongs.forge.api.Capability
+import dev.sargunv.tongs.forge.api.FeedHydrator
+import dev.sargunv.tongs.forge.api.FeedSource
 import dev.sargunv.tongs.forge.api.ForgeAdapter
 import dev.sargunv.tongs.forge.api.ForgeClient
 import dev.sargunv.tongs.forge.api.ForgeKind
@@ -41,6 +43,11 @@ private class GitHubClient(http: HttpClient, account: Account, token: String) : 
     if (inbox != null) GitHubHydrator(http, account.instance, token, account.login) else null
 
   override val threads: ThreadSource = GitHubThreads(http, account.instance, token)
+
+  // The events API takes any token; what it shows depends on the token's scopes.
+  override val feed: FeedSource = GitHubEvents(http, account.instance, token, account.login)
+
+  override val feedHydrator: FeedHydrator = GitHubFeedHydrator(http, account.instance, token)
 
   override val reviews: ReviewSource =
     object : ReviewSource {

@@ -33,6 +33,7 @@ import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
 import androidx.savedstate.serialization.SavedStateConfiguration
 import coil3.compose.setSingletonImageLoaderFactory
+import dev.sargunv.tongs.core.data.FeedSync
 import dev.sargunv.tongs.core.data.InboxSync
 import dev.sargunv.tongs.core.navigation.LocalNavigator
 import dev.sargunv.tongs.core.navigation.Navigator
@@ -43,6 +44,7 @@ import dev.sargunv.tongs.core.ui.TongsIcons
 import dev.sargunv.tongs.core.ui.TongsNavigationSuite
 import dev.sargunv.tongs.core.ui.TongsTheme
 import dev.sargunv.tongs.core.ui.isCompactWidth
+import kotlinx.coroutines.launch
 
 /**
  * The whole app: Android's activity and desktop's window each show one of these.
@@ -67,7 +69,7 @@ fun TongsApp(graph: AppGraph, initialBackStack: List<Route>? = null) {
       val navigator = remember(backStack) { Navigator(backStack) }
       // Signing out of the last account goes back to sign-in.
       LaunchedEffect(signedIn) { if (!signedIn) navigator.reset(Route.SignIn) }
-      if (signedIn) ForegroundSync(graph.inboxSync)
+      if (signedIn) ForegroundSync(graph.inboxSync, graph.feedSync)
       // Screens' view models live in their back stack entries, under the window's owner.
       val viewModels =
         LocalViewModelStoreOwner.current
@@ -171,11 +173,14 @@ private fun AppFrame(
   }
 }
 
-/** Polls the inbox while the app is in the foreground, and again on each return to it. */
+/** Polls the inbox and feed only while the app is in the foreground. */
 @Composable
-private fun ForegroundSync(sync: InboxSync) {
+private fun ForegroundSync(sync: InboxSync, feed: FeedSync) {
   val lifecycle = LocalLifecycleOwner.current.lifecycle
-  LaunchedEffect(lifecycle, sync) {
-    lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { sync.pollWhileActive() }
+  LaunchedEffect(lifecycle, sync, feed) {
+    lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+      launch { sync.pollWhileActive() }
+      launch { feed.pollWhileActive() }
+    }
   }
 }

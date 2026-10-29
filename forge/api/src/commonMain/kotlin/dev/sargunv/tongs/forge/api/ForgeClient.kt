@@ -25,6 +25,13 @@ interface ForgeClient : AutoCloseable {
 
   val reviews: ReviewSource?
 
+  /** The activity feed; see `Feed.kt`. */
+  val feed: FeedSource?
+    get() = null
+
+  val feedHydrator: FeedHydrator?
+    get() = null
+
   /** Issue and PR conversations. */
   val threads: ThreadSource?
     get() = null

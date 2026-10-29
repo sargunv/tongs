@@ -26,12 +26,8 @@ sealed interface Route : NavKey {
 
   @Serializable data object Inbox : TopLevel
 
-  /** The activity feed. A full pane until it has items to open beside it. */
-  @Serializable
-  data object Activity : TopLevel {
-    override val pane: Pane
-      get() = Pane.Full
-  }
+  /** The activity feed. Its issues and PRs open beside it, as the inbox's threads do. */
+  @Serializable data object Activity : TopLevel
 
   @Serializable
   data object Settings : TopLevel {
@@ -48,7 +44,8 @@ sealed interface Route : NavKey {
 
   /**
    * An issue or PR conversation, or another notification subject. [notificationId] is set when it's
-   * opened from the inbox, which supplies its title until the thread is loaded.
+   * opened from the inbox, which supplies its title until the thread is loaded; from the activity
+   * feed, it's null.
    */
   @Serializable
   data class Thread(

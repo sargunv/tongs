@@ -376,7 +376,9 @@ class PullRequestChangesRepository(
   ): kotlinx.coroutines.Deferred<Boolean> =
     drafts.submitReview(key) { rows ->
       val summary = rows.singleOrNull { it.destination == DraftDestination.Summary }?.body.orEmpty()
-      val comments = rows.filter { it.destination != DraftDestination.Summary }
+      val comments = rows.filter {
+        isDeliverableReviewComment(it.destination, it.inReview, it.body)
+      }
       val replies = comments.filter { it.destination == DraftDestination.ReviewReply }
       val lines = comments.filter { it.destination == DraftDestination.LineComment }
       check(lines.all { !it.commitOid.isNullOrEmpty() }) {

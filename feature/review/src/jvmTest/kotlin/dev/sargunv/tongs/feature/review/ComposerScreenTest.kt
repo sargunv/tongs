@@ -108,6 +108,20 @@ class ComposerScreenTest {
             )
             .bytes,
         )
+        onNodeWithTag("composer-body").performTextReplacement(" \n\t")
+        runOnIdle { controller.closeComposer() }
+        onNodeWithTag("review-summary").performTextClearance()
+        waitUntil {
+          controller.allDrafts.single { it.draftKey == line }.body.isBlank() &&
+            controller.pendingCount == 0
+        }
+        onNodeWithText("Submit review").assertIsNotEnabled()
+        val blank = controller.allDrafts.single { it.draftKey == line }
+        runOnIdle { controller.editDraft(blank) }
+        onNodeWithTag("composer-body").performTextReplacement("Retyped")
+        runOnIdle { controller.closeComposer() }
+        waitUntil { controller.pendingCount == 1 }
+        onNodeWithText("Submit review").assertIsEnabled()
       } finally {
         runBlocking { app.coroutineContext[Job]!!.cancelAndJoin() }
         db.close()

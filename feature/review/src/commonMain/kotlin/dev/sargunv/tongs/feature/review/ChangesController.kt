@@ -17,6 +17,7 @@ import dev.sargunv.tongs.core.data.PullRequestChangesRepository
 import dev.sargunv.tongs.core.data.PullRequestKey
 import dev.sargunv.tongs.core.data.PullRequestOverviewEntity
 import dev.sargunv.tongs.core.data.ReviewThreadWithComments
+import dev.sargunv.tongs.core.data.isDeliverableReviewComment
 import dev.sargunv.tongs.core.markdown.MarkdownContext
 import dev.sargunv.tongs.engine.DiffSide
 import dev.sargunv.tongs.engine.FileClass
@@ -502,7 +503,9 @@ class ChangesController(
 
   /** Comments in the review: drafted here, and in a review left pending on the forge. */
   val pendingCount: Int
-    get() = drafts.count { it.inReview } + (overview?.pendingReviewComments ?: 0)
+    get() =
+      drafts.count { isDeliverableReviewComment(it.destination, it.inReview, it.body) } +
+        (overview?.pendingReviewComments ?: 0)
 
   /** Starts a comment on lines picked in the gutter. */
   fun startComment(selection: LineSelection) {

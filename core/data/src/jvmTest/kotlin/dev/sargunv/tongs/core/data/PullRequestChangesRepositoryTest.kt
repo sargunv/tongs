@@ -236,6 +236,66 @@ class PullRequestChangesRepositoryTest {
   }
 
   @Test
+  fun blankedReviewCommentsStayEditableAndSurviveSubmissionUnchanged() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 4, 4)
+    val blankLine = repo.saveDraft(key, anchor.copy(commitOid = "oldHead"), "Erase this")
+    val blankReply = repo.saveDraft(key, anchor, "Erase this reply", inReplyTo = "T_blank")
+    val blankKeys = listOf(blankLine, blankReply).map { db.drafts().byId(it)!!.draftKey }
+    repo.saveDraft(key, anchor, "Keep this line")
+    repo.saveDraft(key, anchor, "Keep this reply", inReplyTo = "T1")
+    repo.setSummary(key, "Keep this summary")
+    blankKeys.zip(listOf("", " \n\t")).forEach { (draft, body) ->
+      assertTrue(drafts.writer(draft).write(body))
+    }
+    // Submit before the erased bodies have reached Room.
+    val gate = CompletableDeferred<Unit>().also { forge.gate = it }
+    val submission = repo.submit(key, ReviewEvent.Comment, "head1")
+    blankKeys.forEach { assertFalse(drafts.writer(it).locked.value) }
+    runCurrent()
+    val before = blankKeys.map { drafts.row(it)!! }
+    assertEquals(listOf("", " \n\t"), before.map { it.body })
+    assertTrue(before.all { it.inReview && !it.submitting })
+    blankKeys.forEach { assertFalse(drafts.writer(it).locked.value) }
+    assertEquals(listOf("start PR_1@head1 [Keep this line]"), forge.calls)
+    gate.complete(Unit)
+    assertTrue(submission.await())
+    assertEquals(
+      listOf(
+        "start PR_1@head1 [Keep this line]",
+        "reply T1 R_new: Keep this reply",
+        "submit R_new Comment: Keep this summary",
+      ),
+      forge.calls,
+    )
+    assertEquals(before, drafts.all(key).first())
+    blankKeys.forEach {
+      assertTrue(drafts.writer(it).write("Retyped"))
+      drafts.writer(it).flush()
+      assertTrue(drafts.row(it)!!.inReview)
+    }
+  }
+
+  @Test
+  fun blankCommentsDoNotAccompanyASummaryOnlyReview() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    val anchor = ReviewAnchor("oldHead", "src/a.kt", DiffSide.New, 4, 4)
+    val line = repo.saveDraft(key, anchor, "")
+    val reply = repo.saveDraft(key, anchor, " \n\t", inReplyTo = "T1")
+    val before = listOf(line, reply).map { db.drafts().byId(it)!! }
+    repo.setSummary(key, "Summary only")
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(listOf("submit Comment"), forge.calls)
+    val submitted = forge.submissions.single()
+    assertEquals("head1", submitted.commitOid)
+    assertEquals("Summary only", submitted.body)
+    assertTrue(submitted.comments.isEmpty())
+    assertEquals(before, drafts.all(key).first())
+  }
+
+  @Test
   fun aFailedSubmissionKeepsTheDrafts() = dbTest { db ->
     val (repo, key) = repository(db)
     repo.refresh(key)

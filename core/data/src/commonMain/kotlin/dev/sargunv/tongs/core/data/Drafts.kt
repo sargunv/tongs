@@ -62,6 +62,15 @@ enum class DraftDestination {
   Summary,
 }
 
+fun isDeliverableReviewComment(
+  destination: DraftDestination,
+  inReview: Boolean,
+  body: String,
+): Boolean =
+  (destination == DraftDestination.LineComment || destination == DraftDestination.ReviewReply) &&
+    inReview &&
+    body.isNotBlank()
+
 data class DraftThread(val accountId: Long, val repo: RepoRef, val number: Int)
 
 /** The only editable copy of a piece of text. Null commit means the anchor is unknown. */
@@ -431,7 +440,7 @@ class DraftRepository(
             it.key.accountId == key.accountId &&
               it.key.repo == key.repo &&
               it.key.number == key.number &&
-              it.inReview.value
+              isDeliverableReviewComment(it.key.destination, it.inReview.value, it.body.value)
           }
           .map { it.key }
       }
@@ -470,7 +479,8 @@ class DraftRepository(
             }
           otherWriters.forEach { it.flush() }
           val rows = dao.all(review.accountId, review.repo.owner, review.repo.name, review.number)
-          for (row in rows.filter { it.inReview }) {
+          for (row in
+            rows.filter { isDeliverableReviewComment(it.destination, it.inReview, it.body) }) {
             val editor = writer(row.draftKey)
             if (editor in editors) continue
             check(editor.reserve()) { "Already submitting" }

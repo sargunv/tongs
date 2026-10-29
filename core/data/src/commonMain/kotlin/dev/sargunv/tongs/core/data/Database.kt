@@ -58,7 +58,7 @@ abstract class TongsDatabase : RoomDatabase() {
 
   abstract fun threads(): ThreadDao
 
-  abstract fun drafts(): DraftDao
+  internal abstract fun drafts(): DraftDao
 
   abstract fun pullRequestChanges(): PullRequestChangesDao
 

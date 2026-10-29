@@ -343,7 +343,7 @@ class PullRequestChangesRepository(
     id: Long = 0,
     inReplyTo: String? = null,
   ): Long {
-    val existing = if (id != 0L) db.drafts().byId(id) else null
+    val existing = if (id != 0L) drafts.byId(id) else null
     val draft =
       existing?.draftKey
         ?: DraftKey(
@@ -358,7 +358,7 @@ class PullRequestChangesRepository(
     drafts.save(draft, body)
     drafts.membership(draft, true)
     drafts.writer(draft).flush()
-    return checkNotNull(db.drafts().get(draft.accountId, draft.value)).id
+    return checkNotNull(drafts.row(draft)).id
   }
 
   suspend fun setSummary(key: PullRequestKey, summary: String) {
@@ -396,39 +396,43 @@ class PullRequestChangesRepository(
       try {
         val remote = overview?.pendingReviewId
         if (remote == null && replies.isEmpty()) {
-          api.submitReview(
-            key.repo,
-            key.number,
-            ReviewSubmission(
-              commit,
-              event,
-              summary,
-              lines.map { DraftReviewComment(checkNotNull(it.anchor), it.body) },
-            ),
-          )
+          drafts.deliverAccepted(rows) {
+            api.submitReview(
+              key.repo,
+              key.number,
+              ReviewSubmission(
+                commit,
+                event,
+                summary,
+                lines.map { DraftReviewComment(checkNotNull(it.anchor), it.body) },
+              ),
+            )
+          }
         } else {
           val reviewId =
             remote
-              ?: api
-                .startPendingReview(
+              ?: drafts.deliverAccepted(lines) {
+                api.startPendingReview(
                   overview?.nodeId ?: error("The PR hasn't loaded yet"),
                   commit,
                   lines.map { DraftReviewComment(checkNotNull(it.anchor), it.body) },
                 )
-                .also { drafts.accepted(lines) }
+              }
           if (remote != null)
             for (line in lines) {
-              api.addToPendingReview(
-                reviewId,
-                DraftReviewComment(checkNotNull(line.anchor), line.body),
-              )
-              drafts.accepted(listOf(line))
+              drafts.deliverAccepted(listOf(line)) {
+                api.addToPendingReview(
+                  reviewId,
+                  DraftReviewComment(checkNotNull(line.anchor), line.body),
+                )
+              }
             }
           for (reply in replies) {
-            api.reply(checkNotNull(reply.inReplyTo), reply.body, pendingReviewId = reviewId)
-            drafts.accepted(listOf(reply))
+            drafts.deliverAccepted(listOf(reply)) {
+              api.reply(checkNotNull(reply.inReplyTo), reply.body, pendingReviewId = reviewId)
+            }
           }
-          api.submitPendingReview(reviewId, event, summary)
+          drafts.deliverAccepted(rows) { api.submitPendingReview(reviewId, event, summary) }
         }
       } finally {
         runCatching { refresh(key) }
@@ -438,17 +442,12 @@ class PullRequestChangesRepository(
   /** Continue explicitly: import the summary only when no local summary exists. */
   suspend fun continuePendingReview(key: PullRequestKey) {
     val draft = DraftKey.summary(key)
-    val local = drafts.get(draft)
-    val remote =
-      dao
-        .overview(key.accountId, key.repo.owner, key.repo.name, key.number)
-        ?.pendingReviewBody
-        .orEmpty()
-    setSummary(key, local ?: remote)
-    val reviewId =
-      dao.overview(key.accountId, key.repo.owner, key.repo.name, key.number)?.pendingReviewId
-        ?: return
-    db.drafts().continueReview(key.accountId, draft.value, reviewId)
+    val pending = dao.overview(key.accountId, key.repo.owner, key.repo.name, key.number) ?: return
+    drafts.continueReview(
+      draft,
+      pending.pendingReviewId ?: return,
+      pending.pendingReviewBody.orEmpty(),
+    )
   }
 
   /**
@@ -502,7 +501,7 @@ class PullRequestChangesRepository(
         dao.upsertThreadComments(listOf(placeholder))
       }
       try {
-        val comment = api(key).reply(threadId, row.body)
+        val comment = drafts.deliverAccepted(rows) { api(key).reply(threadId, row.body) }
         db.withWriteTransaction {
           sendingReplies -= placeholder.id
           dao.deleteThreadComment(key.accountId, placeholder.id)

@@ -83,6 +83,7 @@ class ThreadRepositoryTest {
     var pageGate: CompletableDeferred<Unit>? = null
     var reviewThreads = emptyList<ReviewThread>()
     var refreshGate: CompletableDeferred<Unit>? = null
+    var refuseState = false
 
     private fun timeline() = (0 until count).map { comment("$it", it) }
 
@@ -128,11 +129,13 @@ class ThreadRepositoryTest {
     override suspend fun close(threadId: String, kind: ThreadKind, reason: StateReason?) {
       calls += "close ${reason?.raw}"
       gate?.await()
+      if (refuseState) error("state refused")
       detail = detail.copy(state = ThreadState.Closed, stateReason = reason)
     }
 
     override suspend fun reopen(threadId: String, kind: ThreadKind) {
       calls += "reopen"
+      if (refuseState) error("state refused")
     }
 
     override suspend fun react(subjectId: String, reaction: Reaction, add: Boolean) {
@@ -366,6 +369,36 @@ class ThreadRepositoryTest {
     runCurrent()
     eventually { f.threads.observe(f.ref).first()!!.detail.state == ThreadState.Closed }
     assertEquals(listOf("comment Fixed in #8", "close COMPLETED"), source.calls)
+  }
+
+  @Test
+  fun failedCloseAfterAcceptedCommentDoesNotRestoreOrResendTheDraft() = dbTest { db ->
+    val source = FakeThreads(count = 1).apply { refuseState = true }
+    val f = fixture(db, source)
+    f.threads.refresh(f.ref)
+    f.drafts.save(f.ref.replyDraft, "Fixed")
+    assertFalse(f.threads.comment(f.ref, close = StateReason.Completed).await())
+    assertNull(f.drafts.get(f.ref.replyDraft))
+    assertEquals(1, source.calls.count { it == "comment Fixed" })
+    assertFalse(f.threads.comment(f.ref, close = StateReason.Completed).await())
+    assertEquals(1, source.calls.count { it == "comment Fixed" })
+  }
+
+  @Test
+  fun failedReopenAfterAcceptedCommentDoesNotRestoreOrResendTheDraft() = dbTest { db ->
+    val source =
+      FakeThreads(count = 1).apply {
+        detail = detail.copy(state = ThreadState.Closed)
+        refuseState = true
+      }
+    val f = fixture(db, source)
+    f.threads.refresh(f.ref)
+    f.drafts.save(f.ref.replyDraft, "Reopening")
+    assertFalse(f.threads.comment(f.ref, reopen = true).await())
+    assertNull(f.drafts.get(f.ref.replyDraft))
+    assertEquals(1, source.calls.count { it == "comment Reopening" })
+    assertFalse(f.threads.comment(f.ref, reopen = true).await())
+    assertEquals(1, source.calls.count { it == "comment Reopening" })
   }
 
   @Test

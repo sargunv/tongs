@@ -171,6 +171,7 @@ class ThreadRepository(
       val thread = stored(ref) ?: error("The thread hasn't loaded yet")
       val account = accounts.account(ref.accountId)
       val localId = LOCAL_ID_PREFIX + Random.nextLong().toULong().toString(16)
+      var accepted = false
       if (body.isNotBlank()) {
         val pending =
           TimelineItem.Comment(
@@ -194,14 +195,24 @@ class ThreadRepository(
       }
       try {
         val source = source(ref)
-        if (body.isNotBlank()) confirmComment(ref, localId, source.addComment(thread.id, body))
+        if (body.isNotBlank()) {
+          val posted =
+            drafts.deliverAccepted(rows) {
+              source.addComment(thread.id, body).also { accepted = true }
+            }
+          confirmComment(ref, localId, posted)
+        }
         when {
           close != null -> setState(ref, thread, ThreadState.Closed, close)
           reopen -> setState(ref, thread, ThreadState.Open, StateReason.Reopened)
         }
       } catch (e: Exception) {
-        dao.deleteItem(ref.accountId, ref.repo.owner, ref.repo.name, ref.number, localId)
-        _failures.tryEmit("Couldn't post your comment: ${e.message}. Your draft is saved.")
+        if (!accepted)
+          dao.deleteItem(ref.accountId, ref.repo.owner, ref.repo.name, ref.number, localId)
+        _failures.tryEmit(
+          if (accepted) "Comment posted, but couldn't finish: ${e.message}"
+          else "Couldn't post your comment: ${e.message}. Your draft is saved.",
+        )
         throw e
       }
     }

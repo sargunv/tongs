@@ -107,7 +107,12 @@ data class DraftEntity(
 ) {
   val anchor: ReviewAnchor?
     get() =
-      if (destination == DraftDestination.LineComment && startLine > 0 && endLine >= startLine)
+      if (
+        destination == DraftDestination.LineComment &&
+          startLine > 0 &&
+          endLine > 0 &&
+          (startSide != side || endLine >= startLine)
+      )
         ReviewAnchor(
           commitOid.orEmpty(),
           path,
@@ -132,7 +137,7 @@ data class DraftEntity(
 }
 
 @Dao
-interface DraftDao {
+internal interface DraftDao {
   @Query("SELECT * FROM draft WHERE accountId = :accountId AND `key` = :key")
   suspend fun get(accountId: Long, key: String): DraftEntity?
 
@@ -212,6 +217,7 @@ internal constructor(
   val error = MutableStateFlow<String?>(null)
   private var writeFailure: Exception? = null
   private var membershipOverride: Boolean? = null
+  private var hasLocalInput = false
   private val commands = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
   init {
@@ -263,6 +269,7 @@ internal constructor(
   fun write(text: String): Boolean =
     synchronized(this) {
       if (!ready.value || locked.value) return false
+      hasLocalInput = true
       body.value = text
       if (key.destination == DraftDestination.Summary) inReview.value = true
       commands
@@ -286,6 +293,21 @@ internal constructor(
       enqueue {
         ensure()
         dao.get(key.accountId, key.value)?.let { dao.membership(it.id, member) }
+      }
+    }
+
+  internal fun continueReview(reviewId: String, remoteBody: String) =
+    synchronized(this) {
+      if (locked.value) return
+      membershipOverride = true
+      inReview.value = true
+      enqueue {
+        val row = dao.get(key.accountId, key.value)
+        synchronized(this) {
+          if (row == null && !hasLocalInput) body.value = remoteBody
+        }
+        ensure()
+        dao.continueReview(key.accountId, key.value, reviewId)
       }
     }
 
@@ -313,6 +335,7 @@ internal constructor(
   internal fun clear() =
     synchronized(this) {
       body.value = ""
+      hasLocalInput = false
       inReview.value = false
       membershipOverride = false
       warning.value = false
@@ -341,6 +364,10 @@ class DraftRepository(
 
   suspend fun get(key: DraftKey): String? = dao.get(key.accountId, key.value)?.body
 
+  suspend fun byId(id: Long): DraftEntity? = dao.byId(id)
+
+  suspend fun row(key: DraftKey): DraftEntity? = dao.get(key.accountId, key.value)
+
   suspend fun save(key: DraftKey, body: String) {
     val writer = writer(key)
     writer.ready.first { it }
@@ -366,13 +393,30 @@ class DraftRepository(
     writer.flush()
   }
 
+  suspend fun continueReview(key: DraftKey, reviewId: String, remoteBody: String) {
+    val writer = writer(key)
+    writer.ready.first { it }
+    writer.continueReview(reviewId, remoteBody)
+    writer.flush()
+  }
+
   fun all(key: PullRequestKey): Flow<List<DraftEntity>> =
     dao.observeAll(key.accountId, key.repo.owner, key.repo.name, key.number)
 
   /** Retire rows as soon as the forge accepts them, including during a partial submission. */
-  internal suspend fun accepted(rows: List<DraftEntity>) {
+  private suspend fun accepted(rows: List<DraftEntity>) {
     dao.deleteSubmitted(rows.map { it.id })
     rows.forEach { writer(it.draftKey).clear() }
+  }
+
+  /** The caller supplies the forge operation; its return is the acceptance boundary. */
+  internal suspend fun <T> deliverAccepted(
+    rows: List<DraftEntity>,
+    deliver: suspend () -> T,
+  ): T {
+    val result = deliver()
+    accepted(rows)
+    return result
   }
 
   /** Preparation, claim, delivery and settlement all outlive the screen. No replay on restart. */
@@ -444,8 +488,7 @@ class DraftRepository(
           dao.submitting(ids, true)
           rows
         }
-        deliver(rows)
-        accepted(rows)
+        deliverAccepted(rows) { deliver(rows) }
         true
       } catch (e: kotlinx.coroutines.CancellationException) {
         throw e

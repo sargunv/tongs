@@ -552,6 +552,41 @@ class PullRequestChangesRepositoryTest {
   }
 
   @Test
+  fun continuingPreservesQueuedSummaryInputAheadOfRemoteAdoption() = dbTest { db ->
+    val (repo, key) = repository(db)
+    forge.pendingReview = PendingReview("R_web", "Remote summary", 0)
+    repo.refresh(key)
+    repo.setSummary(key, "Previously saved")
+    val summary = DraftKey.summary(key)
+    val writer = drafts.writer(summary)
+    val busy = CompletableDeferred<Unit>()
+    writer.enqueue { busy.await() }
+    assertTrue(writer.write("Locally typed"))
+    val continuation = async { repo.continuePendingReview(key) }
+    runCurrent()
+    assertFalse(continuation.isCompleted)
+    busy.complete(Unit)
+    continuation.await()
+    assertEquals("Locally typed", writer.body.value)
+    assertEquals("Locally typed", drafts.get(summary))
+    assertEquals("R_web", drafts.row(summary)?.continuedReviewId)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(listOf("submit R_web Comment: Locally typed"), forge.calls)
+  }
+
+  @Test
+  fun aDescendingCrossSideAnchorRemainsEditableAndSubmittable() = dbTest { db ->
+    val (repo, key) = repository(db)
+    repo.refresh(key)
+    val anchor = ReviewAnchor("head1", "src/a.kt", DiffSide.New, 100, 95, DiffSide.Old)
+    val id = repo.saveDraft(key, anchor, "Across the changed lines")
+    assertEquals(anchor, db.drafts().byId(id)?.anchor)
+    assertEquals(anchor, repo.drafts(key).first().single().anchor)
+    assertTrue(repo.submit(key, ReviewEvent.Comment, "head1").await())
+    assertEquals(anchor, forge.submissions.single().comments.single().anchor)
+  }
+
+  @Test
   fun twoRefusedViewedTogglesRestoreTheConfirmedState() = dbTest { db ->
     val (repo, key) = repository(db)
     repo.refresh(key)
@@ -881,6 +916,7 @@ class PullRequestChangesRepositoryTest {
     val refresh = async { repo.refresh(key) }
     runCurrent()
     repo.reply(key, draft).await()
+    assertNull(drafts.get(draft))
     read.complete(Unit)
     refresh.await()
     assertEquals(

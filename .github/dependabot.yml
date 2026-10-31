@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://json.schemastore.org/dependabot-2.0.json
+#
+# Not supported by Dependabot:
+# - mise tool versions: https://github.com/dependabot/dependabot-core/issues/12320
+#   Bump them with `mise use --pin`, and the mise version in
+#   .github/actions/setup-ci-deps by hand.
+version: 2
+updates:
+  # The root covers `.github/workflows`; each composite action needs its own
+  # directory.
+  - package-ecosystem: github-actions
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+    labels: []
+    groups:
+      github-actions:
+        patterns: ["*"]

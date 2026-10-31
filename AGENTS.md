@@ -96,7 +96,13 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   keeps AWT spike modes and offscreen screenshot modes behind flags
 - `androidApp`: Android shell; `MainActivity` runs the app
   (`--es thread owner/repo#N` opens a thread, `--es open owner/repo#N` a PR's
-  changes), and `PullRequestActivity` keeps the account-free PR spike
+  changes), and `PullRequestActivity` keeps the account-free PR spike. Its
+  version code counts commits, so newer builds install over older ones
+- `.github`: CI (`ci.yml`: lint, tests, and the release APK) with its cached
+  setup in `setup-ci-deps`. Each push to main replaces the APK on the `snapshot`
+  prerelease and moves the floating `snapshot` tag. It's signed with the
+  `ANDROID_KEY*` Actions secrets, which Gradle reads as `TONGS_KEYSTORE` and its
+  siblings
 
 ## Dev tool commands
 
@@ -165,7 +171,8 @@ stay fast on PRs with hundreds of thousands of changed lines. The design is in
   `--screenshot=out.png@<row>` to render offscreen (either implies `--spike`);
   add `--no-highlight` to turn off syntax highlighting
 - `./gradlew :androidApp:installRelease`: install the Android app, signed with
-  the debug key (builds the JNI library with cargo-ndk first)
+  the debug key unless `TONGS_KEYSTORE` is set (builds the JNI library with
+  cargo-ndk first)
 - `adb shell am start -n dev.sargunv.tongs/.android.PullRequestActivity`: the PR
   spike, without an account. It fetches maplibre/maplibre-native-ffi#760 in the
   app and shows it as it loads; objects persist per repo in the app's cache dir.

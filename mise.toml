@@ -10,9 +10,11 @@ lockfile = true
 "core:java" = "zulu-25.38.107.0"
 "core:rust" = { version = "1.99.1", profile = "minimal", components = "rustfmt,clippy", targets = "aarch64-linux-android,x86_64-linux-android" }
 "github:bbqsrc/cargo-ndk" = "4.1.2"
+"aqua:koalaman/shellcheck" = "0.11.0"
 
 [env]
-ANDROID_HOME = "{{env.HOME}}/Android/Sdk"
+# Keep an SDK that's already set, as on CI runners.
+ANDROID_HOME = "{{ get_env(name='ANDROID_HOME', default=env.HOME ~ '/Android/Sdk') }}"
 
 [tasks.check]
 run = "hk check --all"

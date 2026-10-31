@@ -1,0 +1,106 @@
+name: Setup CI deps
+description:
+  Install the mise-pinned toolchain, with the caches a job builds against
+
+inputs:
+  save-toolchains:
+    description: >-
+      Save the toolchain cache when this job misses it. One job claims this, so
+      a miss costs one archive of the toolchain tree instead of one per job.
+    required: false
+    default: "false"
+  rust-cache:
+    description: >-
+      Name of the job's cargo target cache, or empty for a job that builds no
+      Rust. Jobs build different profiles and targets, so each keeps its own.
+    required: false
+    default: ""
+  gradle:
+    description: Set up Gradle and its user-home cache
+    required: false
+    default: "false"
+  ndk:
+    description: Install the NDK from gradle/libs.versions.toml if it's missing
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    # Prefixed with the mise version: a newer mise won't reuse a tree an older
+    # one extracted.
+    - name: Compute toolchain cache key
+      id: toolchain-key
+      shell: bash
+      run: |
+        mise_version="2026.10.23"
+        prefix="toolchains-v1-${{ runner.os }}-${{ runner.arch }}-${ImageOS:-unknown}-mise${mise_version}"
+        echo "prefix=${prefix}" >> "$GITHUB_OUTPUT"
+        echo "key=${prefix}-${{ hashFiles('mise.toml', 'mise.lock') }}" >> "$GITHUB_OUTPUT"
+
+    # mise-action's own cache is written inside its step, so it misses the
+    # rustup tree. `core:rust` defers to rustup, which owns ~/.rustup and the
+    # proxies in ~/.cargo/bin; the runner's own stable toolchain stays out.
+    - name: Restore toolchains
+      id: toolchains
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.local/share/mise
+          ~/.rustup
+          !~/.rustup/toolchains/stable-*
+          ~/.cargo/bin
+        key: ${{ steps.toolchain-key.outputs.key }}
+        restore-keys: |
+          ${{ steps.toolchain-key.outputs.prefix }}-
+
+    - name: Install toolchains
+      uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      env:
+        # The postinstall hook installs Git hooks, which no CI job commits
+        # through.
+        MISE_NO_HOOKS: "1"
+      with:
+        # Keep in sync with mise_version in "Compute toolchain cache key".
+        version: 2026.10.23
+        cache: false
+
+    - name: Save toolchains
+      if:
+        ${{ inputs.save-toolchains == 'true' &&
+        steps.toolchains.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.local/share/mise
+          ~/.rustup
+          !~/.rustup/toolchains/stable-*
+          ~/.cargo/bin
+        key: ${{ steps.toolchain-key.outputs.key }}
+
+    # Only main saves, so pull requests read its caches instead of each adding
+    # their own.
+    - name: Cache cargo builds
+      if: ${{ inputs.rust-cache != '' }}
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        shared-key: ${{ inputs.rust-cache }}
+        cache-bin: false
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+
+    # The runner image ships several NDKs; this covers an image without ours.
+    - name: Install the NDK
+      if: ${{ inputs.ndk == 'true' }}
+      shell: bash
+      run: |
+        ndk=$(sed -n 's/^android-ndk = "\(.*\)"$/\1/p' gradle/libs.versions.toml)
+        if [ ! -d "$ANDROID_HOME/ndk/$ndk" ]; then
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk"
+        fi
+
+    # Saves on main and only reads elsewhere.
+    - name: Set up Gradle
+      if: ${{ inputs.gradle == 'true' }}
+      uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      with:
+        add-job-summary: on-failure
